@@ -5,23 +5,7 @@
  */
 
 const round2 = (num) => Math.round((Number(num) + Number.EPSILON) * 100) / 100;
-const MAX_INSTALLMENTS = 10000;
-const isNumericInput = value => (typeof value === "number"
-    || (typeof value === "string" && value.trim() !== ""));
-
-const addCalendarMonths = (date, months) => {
-    const targetMonth = new Date(date);
-    const dayOfMonth = targetMonth.getDate();
-    targetMonth.setDate(1);
-    targetMonth.setMonth(targetMonth.getMonth() + months);
-    const lastDayOfMonth = new Date(
-        targetMonth.getFullYear(),
-        targetMonth.getMonth() + 1,
-        0
-    ).getDate();
-    targetMonth.setDate(Math.min(dayOfMonth, lastDayOfMonth));
-    return targetMonth;
-};
+const { calculateMonthlyInterestSchedule } = require("./monthlyInterestService");
 
 /**
  * Calculate loan totals, upfront deductions, net credit, and installment schedule.
@@ -236,98 +220,15 @@ const calculateLoanSchedule = ({ amount, frequency, rate, total_day, startDate =
             });
         }
     } else if (frequency === "monthly") {
-        // Monthly loans
-        // Number of monthly installments (e.g. total_day / 30 or if total_day < 30, at least 1)
-        numberOfInstallments = Math.max(1, Math.floor(tenure / 30));
-        if (numberOfInstallments > MAX_INSTALLMENTS) {
-            throw new Error(`Repayment schedules cannot exceed ${MAX_INSTALLMENTS} installments.`);
-        }
-
-        const monthlyPrincipal = round2(principal / numberOfInstallments);
-        const monthlyInterest = round2(interestAmount / numberOfInstallments);
-        const standardMonthlyEMI = round2(monthlyPrincipal + monthlyInterest);
-
-        // Deduct processing fee and first month's interest at disbursement
-        // Record first month's interest as prepaid!
-        initialDeduction = round2(processingFee + monthlyInterest);
-        netDisbursed = round2(principal - initialDeduction);
-        upfrontRecovered = monthlyInterest;
-
-        // Monthly grace period: 1 grace allowance per calendar month (5 days)
-        const graceDays = 5;
-
-        // Installment #1:
-        // First month's interest was prepaid upfront at disbursement.
-        // The customer only owes the principal component for Month 1.
-        // Ensure prepaid interest is never collected twice!
-        const due1 = new Date(start);
-        const firstDueDate = addCalendarMonths(start, 1);
-        due1.setTime(firstDueDate.getTime());
-
-        const graceEnd1 = new Date(due1);
-        graceEnd1.setDate(graceEnd1.getDate() + graceDays);
-
-        installments.push({
-            installment_number: 1,
-            due_date: due1,
-            original_due_date: due1,
-            grace_period_days: graceDays,
-            grace_end_date: graceEnd1,
-            expected_amount: monthlyPrincipal, // Only principal remaining for Month 1!
-            principal_component: monthlyPrincipal,
-            interest_component: monthlyInterest, // Tracked as paid upfront
-            amount_paid: 0,
-            remaining_balance: monthlyPrincipal,
-            status: "pending",
-            is_initial_deduction: false,
-            is_prepaid_interest: true,
-            actual_payment_date: null,
-            days_overdue: 0,
-            notes: "Month 1 interest prepaid at disbursement; only principal due on due date"
+        // Monthly loans: Delegated to Monthly Interest Service
+        // Implements: Month 1 interest + 2% processing fee deducted upfront at disbursement;
+        // intermediate months: interest only; final month: full principal repayment.
+        return calculateMonthlyInterestSchedule({
+            amount: principal,
+            rate: interestRate,
+            total_day: tenure,
+            startDate: start
         });
-
-        // Subsequent installments: Month 2 to Month M
-        let cumulativePrincipal = monthlyPrincipal;
-        let cumulativeInterest = monthlyInterest;
-
-        for (let i = 2; i <= numberOfInstallments; i++) {
-            const dueDate = new Date(start);
-            dueDate.setTime(addCalendarMonths(start, i).getTime());
-
-            const graceEndDate = new Date(dueDate);
-            graceEndDate.setDate(graceEndDate.getDate() + graceDays);
-
-            let pComp = monthlyPrincipal;
-            let iComp = monthlyInterest;
-
-            if (i === numberOfInstallments) {
-                pComp = round2(principal - cumulativePrincipal);
-                iComp = round2(interestAmount - cumulativeInterest);
-            }
-            cumulativePrincipal = round2(cumulativePrincipal + pComp);
-            cumulativeInterest = round2(cumulativeInterest + iComp);
-
-            const instAmount = round2(pComp + iComp);
-
-            installments.push({
-                installment_number: i,
-                due_date: dueDate,
-                original_due_date: dueDate,
-                grace_period_days: graceDays,
-                grace_end_date: graceEndDate,
-                expected_amount: instAmount,
-                principal_component: pComp,
-                interest_component: iComp,
-                amount_paid: 0,
-                remaining_balance: instAmount,
-                status: "pending",
-                is_initial_deduction: false,
-                is_prepaid_interest: false,
-                actual_payment_date: null,
-                days_overdue: 0,
-                notes: `Month ${i} installment (Principal + Interest)`
-            });
-        }
     }
 
     if (!Number.isFinite(netDisbursed) || netDisbursed < 0) {
