@@ -24,4 +24,6 @@ const moneySchema = new mongoose.Schema({
     timestamps: true
 });
 
+moneySchema.index({ loan_id: 1, count: 1 }, { unique: true });
+
 module.exports = mongoose.model("Money", moneySchema, "money");
