@@ -1,8 +1,8 @@
 import React from 'react';
-import { CheckCircle2, ShieldCheck, LogOut, ArrowRight } from 'lucide-react';
+import { CheckCircle2, ShieldCheck, LogOut, ArrowRight, User } from 'lucide-react';
 import authService from '../api/auth';
 
-export default function WelcomeModal({ user, onLogout }) {
+export default function WelcomeModal({ user, onLogout, onProceed }) {
   const handleLogout = () => {
     authService.logout();
     if (onLogout) onLogout();
@@ -23,24 +23,24 @@ export default function WelcomeModal({ user, onLogout }) {
           Welcome to <span className="text-amber-400">XorVest</span>!
         </h3>
         <p className="text-xs text-zinc-400 mb-6">
-          Your credentials have been securely verified and tokenized.
+          Your credentials have been securely verified and authenticated.
         </p>
 
         {/* User Card */}
         <div className="bg-zinc-950/80 border border-zinc-800 rounded-xl p-4 text-left space-y-2.5 mb-6">
           <div className="flex items-center justify-between text-xs pb-2 border-b border-zinc-800">
             <span className="text-zinc-400 font-medium">Username:</span>
-            <span className="text-amber-400 font-bold">{user?.username || 'User'}</span>
+            <span className="text-amber-400 font-bold">{user?.username || user?.user_name || 'User'}</span>
           </div>
           <div className="flex items-center justify-between text-xs pb-2 border-b border-zinc-800">
             <span className="text-zinc-400 font-medium">Email Address:</span>
-            <span className="text-white font-mono">{user?.email || 'user@xorvest.com'}</span>
+            <span className="text-white font-mono">{user?.email || 'user@example.com'}</span>
           </div>
           <div className="flex items-center justify-between text-xs">
-            <span className="text-zinc-400 font-medium">Backend Ready:</span>
+            <span className="text-zinc-400 font-medium">Account Role:</span>
             <span className="text-emerald-400 font-semibold flex items-center space-x-1">
               <ShieldCheck className="w-3.5 h-3.5 inline" />
-              <span>JWT Bearer Ready</span>
+              <span>{user?.role === 'admin' ? 'Administrator' : 'Client Borrower'}</span>
             </span>
           </div>
         </div>
@@ -49,10 +49,12 @@ export default function WelcomeModal({ user, onLogout }) {
         <div className="space-y-3">
           <button
             type="button"
-            onClick={() => alert('Ready to redirect to your teammates\' Dashboard once integrated!')}
-            className="w-full py-2.5 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-bold text-sm tracking-wide transition flex items-center justify-center space-x-2 cursor-pointer shadow-lg shadow-amber-500/20"
+            onClick={() => {
+              if (onProceed) onProceed(user);
+            }}
+            className="w-full py-2.5 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-bold text-sm tracking-wide transition flex items-center justify-center space-x-2 cursor-pointer shadow-lg shadow-amber-500/20 active:scale-95"
           >
-            <span>Proceed to Dashboard</span>
+            <span>Proceed to Client Dashboard</span>
             <ArrowRight className="w-4 h-4" />
           </button>
 

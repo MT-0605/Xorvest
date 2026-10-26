@@ -40,8 +40,10 @@ export const authService = {
    */
   async register(userData) {
     try {
+      const name = (userData.user_name || userData.username || '').trim();
       const response = await apiClient.post('/auth/register', {
-        username: userData.username.trim(),
+        user_name: name,
+        username: name,
         email: userData.email.trim().toLowerCase(),
         password: userData.password,
       });
@@ -106,8 +108,10 @@ export const authService = {
    */
   async login(credentials) {
     try {
+      const id = (credentials.identifier || credentials.email || '').trim();
       const response = await apiClient.post('/auth/login', {
-        identifier: credentials.identifier.trim(),
+        identifier: id,
+        email: id,
         password: credentials.password,
       });
 

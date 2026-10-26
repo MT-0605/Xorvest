@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   Building2, 
   Calendar, 
@@ -8,7 +8,9 @@ import {
   Users, 
   CheckCircle2, 
   AlertTriangle, 
-  Download 
+  Download,
+  Loader2,
+  Cloud
 } from 'lucide-react';
 import { dataService } from './data/dataService';
 import { formatDateToISOString, formatDate, formatCurrency } from './utils/formatters';
@@ -24,17 +26,18 @@ import RecordPaymentModal from './components/RecordPaymentModal';
 import AddLoanModal from './components/AddLoanModal';
 import LoanDetailsModal from './components/LoanDetailsModal';
 
-export default function AdminDashboard() {
+export default function AdminDashboard({ user, onLogout }) {
   const [users, setUsers] = useState([]);
   const [loans, setLoans] = useState([]);
   const [money, setMoney] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
 
-  // Date filter state - default to Today's date
+  // Date filter state - default to Today
   const [selectedDate, setSelectedDate] = useState(() => formatDateToISOString(new Date()));
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [frequencyFilter, setFrequencyFilter] = useState('all');
-  const [activeTab, setActiveTab] = useState('all'); // 'all' | 'datewise' | 'loans' | 'money' | 'users'
+  const [activeTab, setActiveTab] = useState('all');
 
   // Modals state
   const [paymentModalItem, setPaymentModalItem] = useState(null);
@@ -42,16 +45,27 @@ export default function AdminDashboard() {
   const [viewingLoanId, setViewingLoanId] = useState(null);
   const [toastMessage, setToastMessage] = useState(null);
 
-  // Load data on mount
-  const refreshData = () => {
-    setUsers(dataService.getUsers());
-    setLoans(dataService.getLoans());
-    setMoney(dataService.getMoneyRecords());
-  };
+  // Load cloud data from MERN backend
+  const loadCloudData = useCallback(async (showNotice = false) => {
+    setIsLoading(true);
+    try {
+      await dataService.fetchAll(selectedDate, frequencyFilter);
+      setUsers(dataService.getUsers());
+      setLoans(dataService.getLoans());
+      setMoney(dataService.getMoneyRecords());
+      if (showNotice) {
+        showToast('Synchronized with Xorvest Backend & MongoDB Atlas!');
+      }
+    } catch (err) {
+      showToast('Error syncing with backend: ' + err.message, 'error');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [selectedDate, frequencyFilter]);
 
   useEffect(() => {
-    refreshData();
-  }, []);
+    loadCloudData();
+  }, [loadCloudData]);
 
   const showToast = (message, type = 'success') => {
     setToastMessage({ message, type });
@@ -60,7 +74,7 @@ export default function AdminDashboard() {
     }, 4000);
   };
 
-  // Date-wise schedule items for active filters
+  // Date-wise schedule items from MERN backend data
   const datewiseItems = useMemo(() => {
     return dataService.getDatewiseSchedule({
       date: selectedDate,
@@ -70,40 +84,49 @@ export default function AdminDashboard() {
     });
   }, [users, loans, money, selectedDate, statusFilter, frequencyFilter, searchQuery]);
 
-  // Overall KPIs
+  // Overall KPIs from MERN backend
   const kpis = useMemo(() => {
-    const targetDate = selectedDate === 'all' ? new Date() : new Date(selectedDate);
-    return dataService.getKPIs(targetDate);
-  }, [users, loans, money, selectedDate]);
+    return dataService.getKPIs();
+  }, [users, loans, money]);
 
   // Action handlers
-  const handleRecordPayment = (paymentData) => {
-    const res = dataService.recordPayment(paymentData);
-    if (res.success) {
-      refreshData();
-      showToast(`Payment of ${formatCurrency(paymentData.amount)} recorded successfully!`);
-    } else {
-      showToast(res.message, 'error');
+  const handleRecordPayment = async (paymentData) => {
+    setIsLoading(true);
+    try {
+      const res = await dataService.recordPayment({
+        loan_id: paymentData.loan_id,
+        installment_id: paymentData.installment_id || paymentData.count,
+        amount: paymentData.amount,
+        notes: 'Admin manual collection'
+      });
+
+      if (res.success) {
+        setUsers(dataService.getUsers());
+        setLoans(dataService.getLoans());
+        setMoney(dataService.getMoneyRecords());
+        showToast(`Payment of ${formatCurrency(paymentData.amount)} recorded into MERN Database!`);
+      } else {
+        showToast(res.message, 'error');
+      }
+    } catch (err) {
+      showToast('Payment failed: ' + err.message, 'error');
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const handleAddLoan = (loanData) => {
-    const newLoan = dataService.addLoan(loanData);
-    refreshData();
-    showToast(`New loan of ${formatCurrency(newLoan.amount)} created successfully!`);
-  };
-
-  const handleAddUser = (userData) => {
-    const newUser = dataService.addUser(userData);
-    refreshData();
-    return newUser;
-  };
-
-  const handleResetData = () => {
-    if (window.confirm('Reset all loans and payments back to the initial demo database?')) {
-      dataService.resetToDefaults();
-      refreshData();
-      showToast('Database reset to initial demo state!');
+  const handleAddLoan = async (loanData) => {
+    setIsLoading(true);
+    try {
+      const newLoan = await dataService.addLoan(loanData);
+      setUsers(dataService.getUsers());
+      setLoans(dataService.getLoans());
+      setMoney(dataService.getMoneyRecords());
+      showToast(`New loan of ${formatCurrency(newLoan.amount || loanData.amount)} created in MERN backend!`);
+    } catch (err) {
+      showToast('Loan creation failed: ' + err.message, 'error');
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -138,7 +161,7 @@ export default function AdminDashboard() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.setAttribute('href', url);
-    link.setAttribute('download', `xorvest_datewise_interest_${selectedDate}.csv`);
+    link.setAttribute('download', `xorvest_backend_datewise_${selectedDate}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -163,31 +186,42 @@ export default function AdminDashboard() {
       {/* Top Navbar */}
       <AdminNavbar
         onOpenAddLoan={() => setIsAddLoanOpen(true)}
-        onResetData={handleResetData}
+        onResetData={() => loadCloudData(true)}
         onExportData={handleExportCSV}
+        isLoading={isLoading}
+        user={user}
+        onLogout={onLogout}
       />
 
       {/* Main Content Area */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full flex-1">
-        {/* Page Title & Intro */}
+        {/* Page Title & MERN Backend Status Banner */}
         <div className="mb-6 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
             <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight flex items-center gap-2.5">
               <span>Admin Loan Dashboard</span>
-              <span className="text-xs px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 font-semibold">
-                Live Datewise Tracking
+              <span className="text-xs px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 font-semibold flex items-center gap-1.5">
+                <Cloud className="w-3.5 h-3.5 text-emerald-400" />
+                MERN Connected (Node/Express + MongoDB Atlas)
               </span>
             </h1>
             <p className="text-xs sm:text-sm text-slate-400 mt-1 max-w-2xl">
-              Monitor on which date who has to pay how much interest with loan principal, interest rates, and borrower records across all system models.
+              Live date-wise tracking of interest dues, customer repayment schedules, loan contracts, and transaction ledger.
             </p>
           </div>
+
+          {isLoading && (
+            <div className="flex items-center gap-2 text-xs text-teal-400 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-xl">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              <span>Fetching from Backend...</span>
+            </div>
+          )}
         </div>
 
         {/* Top Financial KPI Metrics */}
         <StatsCards kpis={kpis} selectedDate={selectedDate} />
 
-        {/* Interactive Filter Bar (Date picker, tabs, search, dropdowns) */}
+        {/* Interactive Filter Bar */}
         <DateFilterBar
           selectedDate={selectedDate}
           onDateChange={setSelectedDate}
@@ -246,7 +280,7 @@ export default function AdminDashboard() {
 
       {/* Footer */}
       <footer className="border-t border-slate-900 bg-slate-950/80 py-6 text-center text-xs text-slate-500">
-        <p>Xorvest Loan Management System • Admin Dashboard with Date-wise Interest Computation</p>
+        <p>Xorvest Loan Management System • Integrated with Express Backend & MongoDB Atlas</p>
       </footer>
 
       {/* Record Payment Modal */}
@@ -264,7 +298,7 @@ export default function AdminDashboard() {
           users={users.filter((u) => u.role !== 'admin')}
           onClose={() => setIsAddLoanOpen(false)}
           onAddLoan={handleAddLoan}
-          onAddUser={handleAddUser}
+          onAddUser={() => {}}
         />
       )}
 

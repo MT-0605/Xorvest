@@ -9,6 +9,12 @@ const Installment = require("./models/Installment");
 const Money = require("./models/Money");
 const { calculateLoanSchedule } = require("./services/loanService");
 
+const getDayOffset = (days) => {
+    const d = new Date();
+    d.setDate(d.getDate() + days);
+    return d;
+};
+
 const seededLoans = [
     {
         id: "672000000000000000000001",
@@ -16,23 +22,53 @@ const seededLoans = [
         amount: 10000,
         frequency: "daily",
         rate: 10,
-        total_day: 10
+        total_day: 10,
+        startOffsetDays: -2 // Day 1 was -2, Day 2 was -1, Day 3 is TODAY!
     },
     {
         id: "672000000000000000000002",
+        email: "vikram@example.com",
+        amount: 25000,
+        frequency: "daily",
+        rate: 12,
+        total_day: 15,
+        startOffsetDays: -1 // Day 1 was -1, Day 2 is TODAY!
+    },
+    {
+        id: "672000000000000000000003",
         email: "rahul@example.com",
         amount: 14000,
         frequency: "weekly",
         rate: 10,
-        total_day: 28
+        total_day: 28,
+        startOffsetDays: -14 // Week 1 (-14), Week 2 (-7), Week 3 is TODAY!
     },
     {
-        id: "672000000000000000000003",
+        id: "672000000000000000000004",
+        email: "ananya@example.com",
+        amount: 35000,
+        frequency: "weekly",
+        rate: 14,
+        total_day: 56,
+        startOffsetDays: -21 // Week 1 (-21), Week 2 (-14), Week 3 (-7), Week 4 is TODAY!
+    },
+    {
+        id: "672000000000000000000005",
         email: "priya@example.com",
         amount: 30000,
         frequency: "monthly",
         rate: 10,
-        total_day: 90
+        total_day: 90,
+        startOffsetDays: -30 // Month 1 was -30, Month 2 is TODAY!
+    },
+    {
+        id: "672000000000000000000006",
+        email: "vikram@example.com",
+        amount: 60000,
+        frequency: "monthly",
+        rate: 15,
+        total_day: 180,
+        startOffsetDays: -60 // Month 1 (-60), Month 2 (-30), Month 3 is TODAY!
     }
 ];
 
@@ -45,14 +81,20 @@ async function seedDatabase() {
 
     const password = await bcrypt.hash("Test@123", 10);
     const users = new Map();
-    for (const [userName, email] of [
-        ["Rahul Patel", "rahul@example.com"],
-        ["Priya Shah", "priya@example.com"]
-    ]) {
+
+    const seedUsers = [
+        ["Rahul Patel", "rahul@example.com", "user"],
+        ["Priya Shah", "priya@example.com", "user"],
+        ["Vikram Malhotra", "vikram@example.com", "user"],
+        ["Ananya Sharma", "ananya@example.com", "user"],
+        ["Admin Officer", "admin@example.com", "admin"]
+    ];
+
+    for (const [userName, email, role] of seedUsers) {
         const user = await User.findOneAndUpdate(
             { email },
             {
-                $set: { user_name: userName, password, role: "user" }
+                $set: { user_name: userName, password, role: role || "user" }
             },
             { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true }
         );
@@ -60,7 +102,7 @@ async function seedDatabase() {
     }
 
     for (const seed of seededLoans) {
-        const startDate = new Date();
+        const startDate = getDayOffset(seed.startOffsetDays || 0);
         const schedule = calculateLoanSchedule({
             amount: seed.amount,
             frequency: seed.frequency,
@@ -68,6 +110,7 @@ async function seedDatabase() {
             total_day: seed.total_day,
             startDate
         });
+
         const user = users.get(seed.email);
         const loan = await Loan.findByIdAndUpdate(
             seed.id,
@@ -86,18 +129,20 @@ async function seedDatabase() {
                     initial_deduction: schedule.initialDeduction,
                     status: "active",
                     start_date: startDate,
-                    notes: "Development seed loan"
+                    notes: `Development seed loan for ${user.user_name}`
                 }
             },
             { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true }
         );
 
         await Installment.deleteMany({ loan_id: loan._id });
-        const installments = await Installment.insertMany(schedule.installments.map(item => ({
-            ...item,
-            loan_id: loan._id,
-            user_id: user._id
-        })));
+        const installments = await Installment.insertMany(
+            schedule.installments.map((item) => ({
+                ...item,
+                loan_id: loan._id,
+                user_id: user._id
+            }))
+        );
 
         await Money.deleteMany({ loan_id: loan._id });
         if (schedule.upfrontRecovered > 0) {
@@ -110,13 +155,15 @@ async function seedDatabase() {
         }
 
         console.log(
-            `Seeded ${seed.frequency} loan ${loan._id} with ${installments.length} installments for ${user.email}.`
+            `Seeded ${seed.frequency} loan ${loan._id} (₹${seed.amount} @ ${seed.rate}%) with ${installments.length} installments for ${user.user_name} (${user.email}).`
         );
     }
+
+    console.log("All sample loans, installments, and users successfully seeded in MongoDB Atlas!");
 }
 
 seedDatabase()
-    .catch(error => {
+    .catch((error) => {
         console.error(`Seeding failed: ${error.message}`);
         process.exitCode = 1;
     })

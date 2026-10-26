@@ -13,17 +13,18 @@ const getCollectionCalendar = async (req, res) => {
     try {
         const { date, frequency } = req.query;
 
-        let targetDate = new Date();
-        let targetDateString;
-        if (date) {
+        let installmentQuery = {};
+        let targetDateString = "all";
+
+        if (date && date !== "all") {
             if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
                 return res.status(400).json({
                     success: false,
-                    message: "date must use YYYY-MM-DD format."
+                    message: "date must use YYYY-MM-DD format or 'all'."
                 });
             }
             const [year, month, day] = date.split("-").map(Number);
-            targetDate = new Date(year, month - 1, day);
+            const targetDate = new Date(year, month - 1, day);
             if (targetDate.getFullYear() !== year
                 || targetDate.getMonth() !== month - 1
                 || targetDate.getDate() !== day) {
@@ -33,13 +34,24 @@ const getCollectionCalendar = async (req, res) => {
                 });
             }
             targetDateString = date;
-        } else {
+            const startOfDay = new Date(year, month - 1, day, 0, 0, 0, 0);
+            const endOfDay = new Date(year, month - 1, day, 23, 59, 59, 999);
+            installmentQuery.due_date = { $gte: startOfDay, $lte: endOfDay };
+        } else if (!date) {
+            const now = new Date();
+            const year = now.getFullYear();
+            const month = now.getMonth();
+            const day = now.getDate();
             targetDateString = [
-                targetDate.getFullYear(),
-                String(targetDate.getMonth() + 1).padStart(2, "0"),
-                String(targetDate.getDate()).padStart(2, "0")
+                year,
+                String(month + 1).padStart(2, "0"),
+                String(day).padStart(2, "0")
             ].join("-");
+            const startOfDay = new Date(year, month, day, 0, 0, 0, 0);
+            const endOfDay = new Date(year, month, day, 23, 59, 59, 999);
+            installmentQuery.due_date = { $gte: startOfDay, $lte: endOfDay };
         }
+
         if (frequency && !["daily", "weekly", "monthly", "all"].includes(frequency)) {
             return res.status(400).json({
                 success: false,
@@ -47,13 +59,7 @@ const getCollectionCalendar = async (req, res) => {
             });
         }
 
-        const startOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 0, 0, 0, 0);
-        const endOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 23, 59, 59, 999);
-
-        // Find installments with due_date on this day
-        const installmentQuery = {
-            due_date: { $gte: startOfDay, $lte: endOfDay }
-        };
+        // Find installments according to query
 
         const installments = await Installment.find(installmentQuery)
             .populate("user_id", "user_name email")

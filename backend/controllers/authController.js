@@ -24,19 +24,22 @@ const generateToken = (user) => {
  */
 const register = async (req, res) => {
     try {
-        const { user_name, email, password } = req.body || {};
+        const body = req.body || {};
+        const userName = (body.user_name || body.username || "").trim();
+        const email = (body.email || "").trim().toLowerCase();
+        const password = body.password || "";
 
-        if (typeof user_name !== "string" || !user_name.trim()
+        if (!userName
             || typeof email !== "string" || email.length > 254
-            || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
+            || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
             || typeof password !== "string" || password.length < 8) {
             return res.status(400).json({
                 success: false,
-                message: "Provide a user_name, valid email, and password of at least 8 characters."
+                message: "Provide a valid name, email address, and password of at least 8 characters."
             });
         }
 
-        const normalizedEmail = email.trim().toLowerCase();
+        const normalizedEmail = email;
         const existingUser = await User.findOne({ email: normalizedEmail });
         if (existingUser) {
             return res.status(400).json({
@@ -49,7 +52,7 @@ const register = async (req, res) => {
         const hashedPassword = await bcrypt.hash(password, salt);
 
         const newUser = await User.create({
-            user_name: user_name.trim(),
+            user_name: userName,
             email: normalizedEmail,
             password: hashedPassword,
             role: "user"
@@ -88,17 +91,20 @@ const register = async (req, res) => {
  */
 const login = async (req, res) => {
     try {
-        const { email, password } = req.body || {};
+        const body = req.body || {};
+        const identifier = (body.email || body.identifier || "").trim().toLowerCase();
+        const password = body.password || "";
 
-        if (typeof email !== "string" || !email.trim()
-            || typeof password !== "string" || !password) {
+        if (!identifier || typeof password !== "string" || !password) {
             return res.status(400).json({
                 success: false,
-                message: "Please provide email and password"
+                message: "Please provide email (or username) and password"
             });
         }
 
-        const user = await User.findOne({ email: email.trim().toLowerCase() });
+        const user = await User.findOne({
+            $or: [{ email: identifier }, { user_name: identifier }]
+        });
         if (!user) {
             return res.status(401).json({
                 success: false,

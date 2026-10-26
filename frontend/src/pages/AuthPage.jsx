@@ -3,19 +3,15 @@ import Navbar from '../components/Navbar';
 import LoanPerksSidebar from '../components/LoanPerksSidebar';
 import LoginForm from '../components/LoginForm';
 import SignupForm from '../components/SignupForm';
-import WelcomeModal from '../components/WelcomeModal';
-import { Lock, UserPlus, Sparkles, ShieldCheck } from 'lucide-react';
+import { Lock, UserPlus, ShieldCheck } from 'lucide-react';
 
-export default function AuthPage() {
+export default function AuthPage({ onLoginSuccess }) {
   const [activeTab, setActiveTab] = useState('login'); // 'login' or 'signup'
-  const [currentUser, setCurrentUser] = useState(null);
 
   const handleAuthSuccess = (user) => {
-    setCurrentUser(user);
-  };
-
-  const handleLogout = () => {
-    setCurrentUser(null);
+    if (onLoginSuccess) {
+      onLoginSuccess(user);
+    }
   };
 
   return (
@@ -94,7 +90,7 @@ export default function AuthPage() {
               <div className="mt-6 pt-4 border-t border-zinc-900 flex items-center justify-between text-[11px] text-zinc-500">
                 <span className="flex items-center space-x-1">
                   <ShieldCheck className="w-3 h-3 text-emerald-500" />
-                  <span>SOC-2 & KYC Compliant</span>
+                  <span>Role-Based Secure Portal</span>
                 </span>
                 <span>Powered by XorVest Engine</span>
               </div>
@@ -119,11 +115,6 @@ export default function AuthPage() {
           </div>
         </div>
       </footer>
-
-      {/* Welcome / Dashboard Preview Modal on Successful Login or Signup */}
-      {currentUser && (
-        <WelcomeModal user={currentUser} onLogout={handleLogout} />
-      )}
     </div>
   );
 }

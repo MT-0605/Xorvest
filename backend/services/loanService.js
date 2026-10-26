@@ -5,6 +5,8 @@
  */
 
 const round2 = (num) => Math.round((Number(num) + Number.EPSILON) * 100) / 100;
+const isNumericInput = (val) => val !== null && val !== undefined && val !== "" && Number.isFinite(Number(val));
+const MAX_INSTALLMENTS = 1000;
 const { calculateMonthlyInterestSchedule } = require("./monthlyInterestService");
 
 /**

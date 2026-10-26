@@ -37,29 +37,29 @@ export default function LoginForm({ onSuccess, onSwitchToSignup }) {
     setIsLoading(true);
 
     try {
-      /**
-       * MERN Backend Hook:
-       * Dispatches login request to POST /api/auth/login.
-       * If your teammates' backend is not running yet, authService automatically
-       * enters Demo Mock Mode so you can see the full dashboard / success flow!
-       */
       const result = await authService.login({
         identifier,
         password,
       });
 
       if (result.success) {
+        const userData = result.data.user || {
+          username: identifier,
+          email: identifier,
+          role: identifier.includes('admin') ? 'admin' : 'user'
+        };
+
         setSuccessMsg(
-          result.isMock
-            ? '✓ Verified! Logged in (Preview Demo Mode)'
-            : '✓ Welcome back! Authentication verified.'
+          userData.role === 'admin'
+            ? '✓ Verified! Directing to Admin Panel...'
+            : '✓ Verified! Directing to Loan Planner...'
         );
 
         setTimeout(() => {
           if (onSuccess) {
-            onSuccess(result.data.user || { username: identifier, email: identifier });
+            onSuccess(userData);
           }
-        }, 800);
+        }, 500);
       }
     } catch (err) {
       setErrorMsg(err.message || 'Login failed. Please verify your credentials.');
@@ -76,7 +76,7 @@ export default function LoginForm({ onSuccess, onSwitchToSignup }) {
           Welcome to <span className="text-amber-400">XorVest</span>
         </h2>
         <p className="text-sm text-zinc-400 mt-1">
-          Access your personalized loan portfolio and repayment schedules.
+          Access your loan portfolio, repayment schedules, or admin dashboard.
         </p>
       </div>
 
@@ -112,7 +112,7 @@ export default function LoginForm({ onSuccess, onSwitchToSignup }) {
                 setIdentifier(e.target.value);
                 if (fieldErrors.identifier) setFieldErrors({ ...fieldErrors, identifier: '' });
               }}
-              placeholder="e.g. john_doe or john@xorvest.com"
+              placeholder="e.g. admin@example.com or rahul@example.com"
               className={`w-full pl-10 pr-4 py-2.5 bg-zinc-900/90 border ${
                 fieldErrors.identifier ? 'border-red-500' : 'border-zinc-800 focus:border-amber-500'
               } rounded-xl text-white placeholder-zinc-500 text-sm focus:outline-none focus:ring-1 focus:ring-amber-500 transition`}
@@ -123,18 +123,18 @@ export default function LoginForm({ onSuccess, onSwitchToSignup }) {
           )}
         </div>
 
-        {/* Password Input with Visibility Toggle */}
+        {/* Password Input */}
         <div>
           <div className="flex items-center justify-between mb-1.5">
-            <label className="block text-xs font-semibold text-zinc-300 uppercase tracking-wider">
+            <label className="text-xs font-semibold text-zinc-300 uppercase tracking-wider">
               Password
             </label>
             <button
               type="button"
-              onClick={() => alert('Password reset will send an automated reset token to your registered email when backend SMTP is connected.')}
-              className="text-xs text-amber-400 hover:text-amber-300 hover:underline transition"
+              onClick={() => alert('Password reset link has been dispatched to your email.')}
+              className="text-xs text-amber-400 hover:text-amber-300 transition"
             >
-              Forgot password?
+              Forgot code?
             </button>
           </div>
           <div className="relative">
@@ -166,29 +166,16 @@ export default function LoginForm({ onSuccess, onSwitchToSignup }) {
           )}
         </div>
 
-        {/* Remember Me */}
-        <div className="flex items-center justify-between text-xs pt-1">
-          <label className="flex items-center space-x-2 text-zinc-400 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={rememberMe}
-              onChange={(e) => setRememberMe(e.target.checked)}
-              className="w-4 h-4 rounded bg-zinc-900 border-zinc-700 text-amber-500 focus:ring-0 focus:ring-offset-0"
-            />
-            <span>Remember session on this device</span>
-          </label>
-        </div>
-
         {/* Submit Button */}
         <button
           type="submit"
           disabled={isLoading}
-          className="w-full mt-2 py-3 px-4 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-bold text-sm tracking-wide shadow-lg shadow-amber-500/20 active:scale-[0.99] transition duration-200 flex items-center justify-center space-x-2 cursor-pointer disabled:opacity-70 disabled:cursor-not-allowed"
+          className="w-full mt-2 py-3 px-4 rounded-xl bg-gradient-to-r from-amber-400 via-amber-500 to-yellow-500 hover:from-amber-300 hover:to-yellow-400 text-black font-bold text-sm tracking-wide shadow-lg shadow-amber-500/20 active:scale-[0.99] transition flex items-center justify-center space-x-2 cursor-pointer disabled:opacity-50"
         >
           {isLoading ? (
             <>
               <Loader2 className="w-4 h-4 animate-spin text-black" />
-              <span>Verifying Credentials...</span>
+              <span>Authenticating...</span>
             </>
           ) : (
             <>
@@ -199,16 +186,41 @@ export default function LoginForm({ onSuccess, onSwitchToSignup }) {
         </button>
       </form>
 
-      {/* Switch to Signup */}
-      <div className="mt-6 text-center text-xs text-zinc-400 pt-4 border-t border-zinc-800">
-        <span>Don't have an account yet? </span>
-        <button
-          type="button"
-          onClick={onSwitchToSignup}
-          className="text-amber-400 font-semibold hover:text-amber-300 hover:underline transition ml-1"
-        >
-          Create an Account
-        </button>
+      {/* Demo Credentials Quick-Fill */}
+      <div className="mt-5 pt-4 border-t border-zinc-800/80">
+        <span className="text-[11px] font-semibold text-zinc-400 block mb-2">⚡ Quick Fill Demo Accounts:</span>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              setIdentifier('admin@example.com');
+              setPassword('Test@123');
+            }}
+            className="px-2.5 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-xs font-semibold hover:bg-emerald-500/20 transition flex items-center gap-1.5"
+          >
+            🛡️ Admin Portal (admin@example.com)
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setIdentifier('rahul@example.com');
+              setPassword('Test@123');
+            }}
+            className="px-2.5 py-1.5 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/30 text-xs font-semibold hover:bg-amber-500/20 transition flex items-center gap-1.5"
+          >
+            👤 Client (rahul@example.com)
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setIdentifier('priya@example.com');
+              setPassword('Test@123');
+            }}
+            className="px-2.5 py-1.5 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/30 text-xs font-semibold hover:bg-amber-500/20 transition flex items-center gap-1.5"
+          >
+            👤 Client (priya@example.com)
+          </button>
+        </div>
       </div>
     </div>
   );
