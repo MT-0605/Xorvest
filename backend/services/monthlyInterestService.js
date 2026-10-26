@@ -187,6 +187,7 @@ const calculateMonthlyInterestSchedule = ({
         totalInterest,
         interestAmount: totalInterest,
         monthlyInterest,
+        processingFeeRate: 2,
         processingFee,
         upfrontInterestDeduction: upfrontInterest,
         initialDeduction,

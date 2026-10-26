@@ -10,19 +10,34 @@ const { randomUUID } = require("crypto");
  * Apply for / create a new loan
  * POST /api/loans/apply
  */
-const applyLoan = async (req, res) => {
+const applyLoan = async (req, res, requiredFrequency = null) => {
     let session;
     try {
         if (!req.user) {
             return res.status(401).json({ success: false, message: "Authentication required." });
         }
 
-        const { amount, frequency, rate, total_day, notes } = req.body || {};
+        const {
+            amount,
+            frequency: requestedFrequency,
+            rate,
+            total_day,
+            notes
+        } = req.body || {};
+        const frequency = requiredFrequency || requestedFrequency;
 
         if (amount === undefined || !frequency || rate === undefined || total_day === undefined) {
             return res.status(400).json({
                 success: false,
-                message: "Please provide amount, frequency (daily, weekly, monthly), rate, and total_day"
+                message: requiredFrequency
+                    ? `Please provide amount, rate, and total_day for a ${requiredFrequency} loan.`
+                    : "Please provide amount, frequency (daily, weekly, monthly), rate, and total_day."
+            });
+        }
+        if (requiredFrequency && requestedFrequency && requestedFrequency !== requiredFrequency) {
+            return res.status(400).json({
+                success: false,
+                message: `This endpoint only creates ${requiredFrequency} loans.`
             });
         }
 
@@ -71,11 +86,29 @@ const applyLoan = async (req, res) => {
                 user_id: userId,
                 total: scheduleData.totalRecovery,
                 remaining: scheduleData.remainingToRecover,
+                duration_months: scheduleData.totalMonths
+                    || Math.max(1, Math.ceil(Number(total_day) / 30)),
+                processing_charge_rate: scheduleData.processingFeeRate,
+                processing_charge: scheduleData.processingFee,
+                total_interest: scheduleData.interestAmount,
+                net_disbursed_amount: scheduleData.netDisbursed,
                 processing_fee: scheduleData.processingFee,
                 interest_amount: scheduleData.interestAmount,
                 net_disbursed: scheduleData.netDisbursed,
                 initial_deduction: scheduleData.initialDeduction,
-                status: "active",
+                repayment_schedule: scheduleData.installments.map(installment => ({
+                    date: installment.due_date,
+                    count: installment.installment_number,
+                    amount: installment.expected_amount,
+                    paid_amount: installment.amount_paid,
+                    remaining: installment.remaining_balance,
+                    status: installment.amount_paid >= installment.expected_amount
+                        ? "paid"
+                        : installment.amount_paid > 0
+                            ? "partial"
+                            : "pending"
+                })),
+                status: scheduleData.remainingToRecover === 0 ? "completed" : "active",
                 start_date: startDate,
                 notes: notes || ""
             }], { session });
@@ -148,6 +181,9 @@ const applyLoan = async (req, res) => {
         }
     }
 };
+
+const createDailyLoan = (req, res) => applyLoan(req, res, "daily");
+const createWeeklyLoan = (req, res) => applyLoan(req, res, "weekly");
 
 /**
  * Customer view of their own loans
@@ -226,6 +262,8 @@ const getMyLoanDetails = async (req, res) => {
 
 module.exports = {
     applyLoan,
+    createDailyLoan,
+    createWeeklyLoan,
     getMyLoans,
     getMyLoanDetails
 };

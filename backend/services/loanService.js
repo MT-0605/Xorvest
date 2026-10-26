@@ -243,6 +243,7 @@ const calculateLoanSchedule = ({ amount, frequency, rate, total_day, startDate =
         principal,
         interestRate,
         interestAmount,
+        processingFeeRate: 2,
         totalRecovery,
         processingFee,
         initialDeduction,
