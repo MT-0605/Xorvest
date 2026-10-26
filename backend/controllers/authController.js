@@ -2,10 +2,18 @@ const User = require("../models/User");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
+const getJwtSecret = () => {
+    const secret = process.env.JWT_SECRET;
+    if (!secret || secret.length < 32) {
+        throw new Error("JWT_SECRET must be configured with at least 32 characters.");
+    }
+    return secret;
+};
+
 const generateToken = (user) => {
     return jwt.sign(
         { id: user._id, role: user.role, email: user.email },
-        process.env.JWT_SECRET || "xorvest_super_secure_jwt_secret_key_2026",
+        getJwtSecret(),
         { expiresIn: process.env.JWT_EXPIRES_IN || "7d" }
     );
 };
@@ -16,16 +24,20 @@ const generateToken = (user) => {
  */
 const register = async (req, res) => {
     try {
-        const { user_name, email, password, role } = req.body;
+        const { user_name, email, password } = req.body || {};
 
-        if (!user_name || !email || !password) {
+        if (typeof user_name !== "string" || !user_name.trim()
+            || typeof email !== "string" || email.length > 254
+            || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
+            || typeof password !== "string" || password.length < 8) {
             return res.status(400).json({
                 success: false,
-                message: "Please provide user_name, email, and password"
+                message: "Provide a user_name, valid email, and password of at least 8 characters."
             });
         }
 
-        const existingUser = await User.findOne({ email: email.toLowerCase() });
+        const normalizedEmail = email.trim().toLowerCase();
+        const existingUser = await User.findOne({ email: normalizedEmail });
         if (existingUser) {
             return res.status(400).json({
                 success: false,
@@ -37,10 +49,10 @@ const register = async (req, res) => {
         const hashedPassword = await bcrypt.hash(password, salt);
 
         const newUser = await User.create({
-            user_name,
-            email: email.toLowerCase(),
+            user_name: user_name.trim(),
+            email: normalizedEmail,
             password: hashedPassword,
-            role: role === "admin" ? "admin" : "user"
+            role: "user"
         });
 
         const token = generateToken(newUser);
@@ -57,9 +69,15 @@ const register = async (req, res) => {
             }
         });
     } catch (error) {
+        if (error.code === 11000) {
+            return res.status(409).json({
+                success: false,
+                message: "A user with this email already exists."
+            });
+        }
         return res.status(500).json({
             success: false,
-            message: "Server error during registration: " + error.message
+            message: "Server error during registration."
         });
     }
 };
@@ -70,16 +88,17 @@ const register = async (req, res) => {
  */
 const login = async (req, res) => {
     try {
-        const { email, password } = req.body;
+        const { email, password } = req.body || {};
 
-        if (!email || !password) {
+        if (typeof email !== "string" || !email.trim()
+            || typeof password !== "string" || !password) {
             return res.status(400).json({
                 success: false,
                 message: "Please provide email and password"
             });
         }
 
-        const user = await User.findOne({ email: email.toLowerCase() });
+        const user = await User.findOne({ email: email.trim().toLowerCase() });
         if (!user) {
             return res.status(401).json({
                 success: false,
@@ -87,25 +106,20 @@ const login = async (req, res) => {
             });
         }
 
-        // Support both bcrypt-hashed passwords and fallback plain text
-        let isMatch = false;
-        if (user.password.startsWith("$2a$") || user.password.startsWith("$2b$")) {
-            isMatch = await bcrypt.compare(password, user.password);
-        } else {
-            isMatch = (user.password === password);
-            if (isMatch) {
-                // upgrade plain text password to hashed
-                const salt = await bcrypt.genSalt(10);
-                user.password = await bcrypt.hash(password, salt);
-                await user.save();
-            }
-        }
+        const hasBcryptHash = /^\$2[aby]\$/.test(user.password);
+        const isMatch = hasBcryptHash
+            ? await bcrypt.compare(password, user.password)
+            : user.password === password;
 
         if (!isMatch) {
             return res.status(401).json({
                 success: false,
                 message: "Invalid email or password"
             });
+        }
+        if (!hasBcryptHash) {
+            user.password = await bcrypt.hash(password, 10);
+            await user.save();
         }
 
         const token = generateToken(user);
@@ -124,7 +138,7 @@ const login = async (req, res) => {
     } catch (error) {
         return res.status(500).json({
             success: false,
-            message: "Server error during login: " + error.message
+            message: "Server error during login."
         });
     }
 };
@@ -136,6 +150,12 @@ const login = async (req, res) => {
 const getMe = async (req, res) => {
     try {
         const user = await User.findById(req.user._id).select("-password");
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                message: "User not found."
+            });
+        }
         return res.status(200).json({
             success: true,
             user
@@ -143,7 +163,7 @@ const getMe = async (req, res) => {
     } catch (error) {
         return res.status(500).json({
             success: false,
-            message: "Server error: " + error.message
+            message: "Server error retrieving profile."
         });
     }
 };

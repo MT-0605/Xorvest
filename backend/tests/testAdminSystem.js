@@ -10,11 +10,23 @@
  */
 
 const mongoose = require("mongoose");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
 const path = require("path");
-const dotenv = require("dotenv");
+require("dotenv").config({ path: path.join(__dirname, "../.env") });
+const connectDB = require("../config/db");
 
 process.env.NODE_ENV = "test";
-dotenv.config({ path: path.join(__dirname, "../.env") });
+if (!process.env.TEST_MONGODB_URI) {
+    throw new Error("Set TEST_MONGODB_URI to a dedicated test database before running integration tests.");
+}
+const testDatabaseName = new URL(process.env.TEST_MONGODB_URI).pathname.slice(1);
+if (!/^xorvest_test(?:_[a-z0-9_-]+)?$/i.test(testDatabaseName)) {
+    throw new Error("Integration tests may only use a database named xorvest_test or xorvest_test_<suffix>.");
+}
+process.env.MONGODB_URI = process.env.TEST_MONGODB_URI;
+process.env.MONGO_URI = process.env.TEST_MONGODB_URI;
+process.env.JWT_SECRET = "integration-test-only-secret-32-characters";
 
 const app = require("../server");
 const User = require("../models/User");
@@ -28,14 +40,14 @@ let server;
 let baseUrl;
 
 const startServer = () => {
-    return new Promise((resolve) => {
+    return connectDB().then(() => new Promise((resolve) => {
         server = app.listen(0, () => {
             const port = server.address().port;
             baseUrl = `http://127.0.0.1:${port}`;
             console.log(`Test server running on ${baseUrl}`);
             resolve();
         });
-    });
+    }));
 };
 
 const stopServer = async () => {
@@ -65,33 +77,55 @@ const runTests = async () => {
     await startServer();
 
     try {
-        // Clear test database collections
-        await User.deleteMany({ email: /@testxorvest\.com$/ });
-        await Loan.deleteMany({});
-        await Installment.deleteMany({});
-        await Money.deleteMany({});
-        await TransactionLedger.deleteMany({});
+        // Clear only records owned by this test suite; never truncate collections.
+        const testUsers = await User.find({
+            email: /@testxorvest\.com$/
+        }).select("_id");
+        const testUserIds = testUsers.map(user => user._id);
+        const testLoans = await Loan.find({ user_id: { $in: testUserIds } }).select("_id");
+        const testLoanIds = testLoans.map(loan => loan._id);
+
+        await TransactionLedger.deleteMany({
+            $or: [
+                { user_id: { $in: testUserIds } },
+                { loan_id: { $in: testLoanIds } }
+            ]
+        });
+        await Money.deleteMany({ loan_id: { $in: testLoanIds } });
+        await Installment.deleteMany({ loan_id: { $in: testLoanIds } });
+        await Loan.deleteMany({ _id: { $in: testLoanIds } });
+        await User.deleteMany({ _id: { $in: testUserIds } });
 
         console.log(" Cleaned up test database collections.\n");
 
         // ----------------------------------------------------
         // TEST 1: User Registration & Authentication Setup
         // ----------------------------------------------------
-        console.log(">>> [SETUP] Registering Admin and Regular Customer...");
+        console.log(">>> [SETUP] Creating Admin and registering Regular Customer...");
 
-        const adminRes = await makeRequest("/api/auth/register", {
+        const adminPassword = await bcrypt.hash("adminPassword123!", 10);
+        const adminUser = await User.create({
+            user_name: "Admin User",
+            email: "admin@testxorvest.com",
+            password: adminPassword,
+            role: "admin"
+        });
+        const adminId = adminUser._id.toString();
+        const adminToken = jwt.sign({ id: adminId }, process.env.JWT_SECRET, { expiresIn: "1h" });
+        const adminRegistrationRes = await makeRequest("/api/auth/register", {
             method: "POST",
             body: JSON.stringify({
-                user_name: "Admin User",
-                email: "admin@testxorvest.com",
-                password: "adminPassword123!",
+                user_name: "Unprivileged Admin",
+                email: "unprivileged-admin@testxorvest.com",
+                password: "customerPassword123!",
                 role: "admin"
             })
         });
-        if (adminRes.status !== 201) throw new Error("Admin registration failed: " + JSON.stringify(adminRes.data));
-        const adminToken = adminRes.data.token;
-        const adminId = adminRes.data.user.id;
-        console.log(" Admin registered successfully with ADMIN role.");
+        if (adminRegistrationRes.status !== 201
+            || adminRegistrationRes.data.user.role !== "user") {
+            throw new Error("Public registration must not grant administrator privileges.");
+        }
+        console.log(" Admin fixture created directly; public registration cannot grant ADMIN role.");
 
         const customerRes = await makeRequest("/api/auth/register", {
             method: "POST",

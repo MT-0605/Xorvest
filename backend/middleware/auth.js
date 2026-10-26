@@ -1,30 +1,62 @@
 const jwt = require("jsonwebtoken");
+const mongoose = require("mongoose");
 const User = require("../models/User");
+
+function getJwtSecret() {
+    const secret = process.env.JWT_SECRET;
+    if (!secret || secret.length < 32) {
+        throw new Error("JWT_SECRET must be configured with at least 32 characters.");
+    }
+    return secret;
+}
 
 /**
  * Verify JWT token and attach user to req.user
  */
 const verifyToken = async (req, res, next) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({
+            success: false,
+            message: "Unauthorized: Token missing or invalid"
+        });
+    }
+
+    const token = authHeader.slice(7);
+    if (!token) {
+        return res.status(401).json({
+            success: false,
+            message: "Unauthorized: Token missing"
+        });
+    }
+
+    let secret;
     try {
-        const authHeader = req.headers.authorization;
-        if (!authHeader || !authHeader.startsWith("Bearer ")) {
-            return res.status(401).json({
-                success: false,
-                message: "Unauthorized: Token missing or invalid"
-            });
-        }
+        secret = getJwtSecret();
+    } catch (error) {
+        return res.status(500).json({
+            success: false,
+            message: "JWT authentication is not configured."
+        });
+    }
 
-        const token = authHeader.split(" ")[1];
-        if (!token) {
-            return res.status(401).json({
-                success: false,
-                message: "Unauthorized: Token missing"
-            });
-        }
+    let decoded;
+    try {
+        decoded = jwt.verify(token, secret, { algorithms: ["HS256"] });
+    } catch (error) {
+        return res.status(401).json({ success: false, message: "Unauthorized: Invalid token" });
+    }
 
-        const decoded = jwt.verify(token, process.env.JWT_SECRET || "xorvest_super_secure_jwt_secret_key_2026");
+    if (!decoded || typeof decoded !== "object"
+        || !mongoose.isValidObjectId(decoded.id)) {
+        return res.status(401).json({
+            success: false,
+            message: "Unauthorized: Invalid token"
+        });
+    }
+
+    try {
         const user = await User.findById(decoded.id).select("-password");
-
         if (!user) {
             return res.status(401).json({
                 success: false,
@@ -33,12 +65,9 @@ const verifyToken = async (req, res, next) => {
         }
 
         req.user = user;
-        next();
+        return next();
     } catch (error) {
-        return res.status(401).json({
-            success: false,
-            message: "Unauthorized: " + (error.message || "Invalid token")
-        });
+        return next(error);
     }
 };
 

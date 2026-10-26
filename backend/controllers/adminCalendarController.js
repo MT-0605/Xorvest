@@ -13,13 +13,38 @@ const getCollectionCalendar = async (req, res) => {
     try {
         const { date, frequency } = req.query;
 
-        // Parse target date
         let targetDate = new Date();
+        let targetDateString;
         if (date) {
-            const parsed = new Date(date);
-            if (!isNaN(parsed.getTime())) {
-                targetDate = parsed;
+            if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+                return res.status(400).json({
+                    success: false,
+                    message: "date must use YYYY-MM-DD format."
+                });
             }
+            const [year, month, day] = date.split("-").map(Number);
+            targetDate = new Date(year, month - 1, day);
+            if (targetDate.getFullYear() !== year
+                || targetDate.getMonth() !== month - 1
+                || targetDate.getDate() !== day) {
+                return res.status(400).json({
+                    success: false,
+                    message: "date must be a valid calendar date."
+                });
+            }
+            targetDateString = date;
+        } else {
+            targetDateString = [
+                targetDate.getFullYear(),
+                String(targetDate.getMonth() + 1).padStart(2, "0"),
+                String(targetDate.getDate()).padStart(2, "0")
+            ].join("-");
+        }
+        if (frequency && !["daily", "weekly", "monthly", "all"].includes(frequency)) {
+            return res.status(400).json({
+                success: false,
+                message: "frequency must be daily, weekly, monthly, or all."
+            });
         }
 
         const startOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 0, 0, 0, 0);
@@ -92,7 +117,7 @@ const getCollectionCalendar = async (req, res) => {
 
         return res.status(200).json({
             success: true,
-            date: startOfDay.toISOString().split("T")[0],
+            date: targetDateString,
             filter_frequency: frequency || "all",
             summary: {
                 total_installments_due: items.length,
@@ -105,7 +130,7 @@ const getCollectionCalendar = async (req, res) => {
     } catch (error) {
         return res.status(500).json({
             success: false,
-            message: "Failed to load collection calendar: " + error.message
+            message: "Failed to load collection calendar."
         });
     }
 };

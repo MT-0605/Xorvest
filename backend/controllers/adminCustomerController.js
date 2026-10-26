@@ -2,6 +2,7 @@ const User = require("../models/User");
 const Loan = require("../models/Loan");
 const Installment = require("../models/Installment");
 const TransactionLedger = require("../models/TransactionLedger");
+const mongoose = require("mongoose");
 const { evaluateInstallmentStatus, round2 } = require("../services/loanService");
 
 /**
@@ -89,7 +90,7 @@ const getAllCustomersSummary = async (req, res) => {
     } catch (error) {
         return res.status(500).json({
             success: false,
-            message: "Failed to retrieve customers summary: " + error.message
+            message: "Failed to retrieve customers summary."
         });
     }
 };
@@ -100,6 +101,12 @@ const getAllCustomersSummary = async (req, res) => {
  */
 const getCustomerLoanHistory = async (req, res) => {
     try {
+        if (!mongoose.isValidObjectId(req.params.id)) {
+            return res.status(400).json({
+                success: false,
+                message: "Customer id must be a valid object ID."
+            });
+        }
         const customer = await User.findById(req.params.id).select("-password");
         if (!customer) {
             return res.status(404).json({
@@ -194,7 +201,7 @@ const getCustomerLoanHistory = async (req, res) => {
     } catch (error) {
         return res.status(500).json({
             success: false,
-            message: "Failed to retrieve customer loan history: " + error.message
+            message: "Failed to retrieve customer loan history."
         });
     }
 };
