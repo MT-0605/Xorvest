@@ -30,6 +30,7 @@ app.get("/api/health", (req, res) => {
 app.use("/api/auth", require("./routes/authRoutes"));
 app.use("/api/loans", require("./routes/loanRoutes"));
 app.use("/api/admin", require("./routes/adminRoutes"));
+app.use("/api/monthly-interest", require("./routes/monthlyInterestRoutes"));
 
 // 404 Handler
 app.use((req, res, next) => {
