@@ -3,19 +3,33 @@ const Installment = require("../models/Installment");
 const Money = require("../models/Money");
 const TransactionLedger = require("../models/TransactionLedger");
 const { calculateLoanSchedule, evaluateInstallmentStatus } = require("../services/loanService");
+const mongoose = require("mongoose");
+const { randomUUID } = require("crypto");
 
 /**
  * Apply for / create a new loan
  * POST /api/loans/apply
  */
 const applyLoan = async (req, res) => {
+    let session;
     try {
-        const { amount, frequency, rate, total_day, notes } = req.body;
+        if (!req.user) {
+            return res.status(401).json({ success: false, message: "Authentication required." });
+        }
 
-        if (!amount || !frequency || rate === undefined || !total_day) {
+        const { amount, frequency, rate, total_day, notes } = req.body || {};
+
+        if (amount === undefined || !frequency || rate === undefined || total_day === undefined) {
             return res.status(400).json({
                 success: false,
                 message: "Please provide amount, frequency (daily, weekly, monthly), rate, and total_day"
+            });
+        }
+
+        if (typeof notes !== "undefined" && (typeof notes !== "string" || notes.length > 1000)) {
+            return res.status(400).json({
+                success: false,
+                message: "notes must be a string of at most 1000 characters."
             });
         }
 
@@ -28,72 +42,77 @@ const applyLoan = async (req, res) => {
 
         const userId = req.user._id;
 
-        // Calculate schedule and upfront deductions
-        const scheduleData = calculateLoanSchedule({
-            amount,
-            frequency,
-            rate,
-            total_day,
-            startDate: new Date()
-        });
-
-        // Create Loan document adhering to the original and extended schema
-        const loan = await Loan.create({
-            amount: scheduleData.principal,
-            frequency,
-            rate: scheduleData.interestRate,
-            total_day: Number(total_day),
-            user_id: userId,
-            total: scheduleData.totalRecovery,
-            remaining: scheduleData.remainingToRecover,
-            processing_fee: scheduleData.processingFee,
-            interest_amount: scheduleData.interestAmount,
-            net_disbursed: scheduleData.netDisbursed,
-            initial_deduction: scheduleData.initialDeduction,
-            status: "active",
-            start_date: new Date(),
-            notes: notes || ""
-        });
-
-        // Insert Installments
-        const installmentsToInsert = scheduleData.installments.map((inst) => ({
-            ...inst,
-            loan_id: loan._id,
-            user_id: userId
-        }));
-
-        const createdInstallments = await Installment.insertMany(installmentsToInsert);
-
-        // Record initial upfront recovery in TransactionLedger and Money if applicable
-        if (scheduleData.upfrontRecovered > 0) {
-            const firstInst = createdInstallments[0];
-            const payRef = `DED-${Date.now()}-${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
-
-            const ledgerEntry = await TransactionLedger.create({
-                payment_reference: payRef,
-                loan_id: loan._id,
-                installment_id: firstInst ? firstInst._id : null,
-                user_id: userId,
-                recorded_by_admin: req.user.role === "admin" ? req.user._id : userId,
-                recorded_by_name: req.user.user_name || "System Disbursement",
-                amount: scheduleData.upfrontRecovered,
-                transaction_type: "initial_deduction",
-                payment_method: "system_deduction",
-                status: "completed",
-                notes: `Upfront disbursement deduction (${frequency} loan)`
+        let scheduleData;
+        const startDate = new Date();
+        try {
+            scheduleData = calculateLoanSchedule({
+                amount,
+                frequency,
+                rate,
+                total_day,
+                startDate
             });
-
-            // Sync with existing Money model
-            const moneyRecord = await Money.create({
-                loan_id: loan._id,
-                date: new Date(),
-                amount: scheduleData.upfrontRecovered,
-                count: 1
+        } catch (error) {
+            return res.status(400).json({
+                success: false,
+                message: error.message
             });
-
-            ledgerEntry.money_id = moneyRecord._id;
-            await ledgerEntry.save();
         }
+
+        session = await mongoose.startSession();
+        let loan;
+        let createdInstallments;
+        await session.withTransaction(async () => {
+            [loan] = await Loan.create([{
+                amount: scheduleData.principal,
+                frequency,
+                rate: scheduleData.interestRate,
+                total_day: Number(total_day),
+                user_id: userId,
+                total: scheduleData.totalRecovery,
+                remaining: scheduleData.remainingToRecover,
+                processing_fee: scheduleData.processingFee,
+                interest_amount: scheduleData.interestAmount,
+                net_disbursed: scheduleData.netDisbursed,
+                initial_deduction: scheduleData.initialDeduction,
+                status: "active",
+                start_date: startDate,
+                notes: notes || ""
+            }], { session });
+
+            const installmentsToInsert = scheduleData.installments.map(inst => ({
+                ...inst,
+                loan_id: loan._id,
+                user_id: userId
+            }));
+            createdInstallments = await Installment.insertMany(installmentsToInsert, { session });
+
+            if (scheduleData.upfrontRecovered > 0) {
+                const [ledgerEntry] = await TransactionLedger.create([{
+                    payment_reference: `DED-${randomUUID()}`,
+                    loan_id: loan._id,
+                    installment_id: createdInstallments[0]._id,
+                    user_id: userId,
+                    recorded_by_admin: req.user.role === "admin" ? req.user._id : userId,
+                    recorded_by_name: req.user.user_name || "System Disbursement",
+                    amount: scheduleData.upfrontRecovered,
+                    transaction_type: "initial_deduction",
+                    payment_method: "system_deduction",
+                    status: "completed",
+                    notes: `Upfront disbursement deduction (${frequency} loan)`
+                }], { session });
+
+                const [moneyRecord] = await Money.create([{
+                    loan_id: loan._id,
+                    date: startDate,
+                    amount: scheduleData.upfrontRecovered,
+                    count: 1
+                }], { session });
+
+                ledgerEntry.money_id = moneyRecord._id;
+                await ledgerEntry.save({ session });
+            }
+        });
 
         return res.status(201).json({
             success: true,
@@ -112,10 +131,21 @@ const applyLoan = async (req, res) => {
             }
         });
     } catch (error) {
+        if (error.code === 20 || error.codeName === "IllegalOperation"
+            || /transaction numbers are only allowed|does not support transactions/i.test(error.message)) {
+            return res.status(503).json({
+                success: false,
+                message: "Loan creation requires MongoDB transaction support (a replica set or sharded cluster)."
+            });
+        }
         return res.status(500).json({
             success: false,
-            message: "Failed to apply for loan: " + error.message
+            message: "Failed to apply for loan."
         });
+    } finally {
+        if (session) {
+            await session.endSession();
+        }
     }
 };
 
@@ -135,7 +165,7 @@ const getMyLoans = async (req, res) => {
     } catch (error) {
         return res.status(500).json({
             success: false,
-            message: "Failed to retrieve loans: " + error.message
+            message: "Failed to retrieve loans."
         });
     }
 };
@@ -146,6 +176,13 @@ const getMyLoans = async (req, res) => {
  */
 const getMyLoanDetails = async (req, res) => {
     try {
+        if (!mongoose.isValidObjectId(req.params.id)) {
+            return res.status(400).json({
+                success: false,
+                message: "Loan id must be a valid object ID."
+            });
+        }
+
         const loan = await Loan.findById(req.params.id);
         if (!loan) {
             return res.status(404).json({
@@ -183,10 +220,7 @@ const getMyLoanDetails = async (req, res) => {
             transactions
         });
     } catch (error) {
-        return res.status(500).json({
-            success: false,
-            message: "Failed to retrieve loan details: " + error.message
-        });
+        return res.status(500).json({ success: false, message: "Failed to retrieve loan details." });
     }
 };
 

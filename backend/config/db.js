@@ -1,14 +1,14 @@
 const mongoose = require("mongoose");
 
 const connectDB = async () => {
-    try {
-        const uri = process.env.MONGO_URI || process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/xorvest";
-        const conn = await mongoose.connect(uri);
-        console.log(`MongoDB Connected: ${conn.connection.host}`);
-    } catch (error) {
-        console.error(`MongoDB Connection Error: ${error.message}`);
-        process.exit(1);
+    const uri = process.env.MONGO_URI || process.env.MONGODB_URI;
+    if (!uri) {
+        throw new Error("MONGO_URI or MONGODB_URI must be configured.");
     }
+
+    const conn = await mongoose.connect(uri);
+    console.log(`MongoDB Connected: ${conn.connection.host}`);
+    return conn;
 };
 
 module.exports = connectDB;
