@@ -7,17 +7,13 @@ export default {
   theme: {
     extend: {
       colors: {
-        xorvest: {
-          dark: '#0B0F17',
-          card: '#111827',
-          gold: '#F59E0B',
-          amber: '#F59E0B',
-          goldLight: '#FCD34D',
-          goldDark: '#B45309'
+        brand: {
+          50: '#f0fdf4',
+          100: '#dcfce7',
+          500: '#22c55e',
+          600: '#16a34a',
+          700: '#15803d',
         }
-      },
-      backgroundImage: {
-        'gradient-radial': 'radial-gradient(var(--tw-gradient-stops))',
       }
     },
   },

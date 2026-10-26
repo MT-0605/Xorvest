@@ -1,10 +1,6 @@
 import React from 'react';
-import AuthPage from './pages/AuthPage';
+import AdminDashboard from './admin/AdminDashboard';
 
 export default function App() {
-  return (
-    <div className="App">
-      <AuthPage />
-    </div>
-  );
+  return <AdminDashboard />;
 }
