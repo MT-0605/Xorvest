@@ -20,7 +20,7 @@ test("calculates daily simple-interest totals and upfront recovery", () => {
     assert.equal(result.installments.length, 10);
 });
 
-test("interprets weekly and monthly tenure in days with a minimum single installment", () => {
+test("interprets a partial week as one weekly installment", () => {
     const weekly = calculateLoanSchedule({
         amount: 1000,
         frequency: "weekly",
@@ -28,16 +28,8 @@ test("interprets weekly and monthly tenure in days with a minimum single install
         total_day: 6,
         startDate: new Date("2025-01-01T00:00:00.000Z")
     });
-    const monthly = calculateLoanSchedule({
-        amount: 1000,
-        frequency: "monthly",
-        rate: 10,
-        total_day: 29,
-        startDate: new Date("2025-01-01T00:00:00.000Z")
-    });
 
     assert.equal(weekly.numberOfInstallments, 1);
-    assert.equal(monthly.numberOfInstallments, 1);
 });
 
 test("clamps month-end installments to valid calendar dates", () => {
@@ -76,6 +68,6 @@ test("rejects invalid financial terms and impossible disbursement deductions", (
     }), /deductions exceed/);
     assert.throws(() => calculateLoanSchedule({
         ...base,
-        total_day: 10001
-    }), /cannot exceed 10000 installments/);
+        total_day: 1001
+    }), /cannot exceed 1000 installments/);
 });

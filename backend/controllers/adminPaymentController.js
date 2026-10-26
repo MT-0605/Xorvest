@@ -151,18 +151,34 @@ const recordPayment = async (req, res) => {
             const installmentStatus = evaluateInstallmentStatus(updatedInstallment, paymentDate);
             updatedInstallment.status = installmentStatus.status;
             updatedInstallment.days_overdue = installmentStatus.daysOverdue;
+            updatedInstallment.amount_paid = round2(updatedInstallment.amount_paid);
+            updatedInstallment.remaining_balance = round2(updatedInstallment.remaining_balance);
             await updatedInstallment.save({ session });
 
+            const loanUpdate = {
+                $inc: { remaining: -payAmount },
+                $set: {
+                    "repayment_schedule.$[schedule].paid_amount": updatedInstallment.amount_paid,
+                    "repayment_schedule.$[schedule].remaining": updatedInstallment.remaining_balance,
+                    "repayment_schedule.$[schedule].status":
+                        updatedInstallment.amount_paid >= updatedInstallment.expected_amount
+                            ? "paid"
+                            : updatedInstallment.amount_paid > 0
+                                ? "partial"
+                                : "pending"
+                }
+            };
             const updatedLoan = await Loan.findOneAndUpdate({
                 _id: loan._id,
                 remaining: { $gte: payAmount },
                 status: { $ne: "completed" }
-            }, {
-                $inc: { remaining: -payAmount }
-            }, {
+            }, loanUpdate, {
                 new: true,
                 runValidators: true,
-                session
+                session,
+                arrayFilters: [{
+                    "schedule.count": updatedInstallment.installment_number
+                }]
             });
             if (!updatedLoan) {
                 const error = new Error("Loan balance changed; reload and retry.");
@@ -340,7 +356,9 @@ const reversePayment = async (req, res) => {
                 remaining: { $lte: round2(loan.total - amount) }
             }, {
                 $inc: { remaining: amount },
-                $set: { status: "active" }
+                $set: {
+                    status: loan.status === "completed" ? "active" : loan.status
+                }
             }, {
                 new: true,
                 runValidators: true,
@@ -409,6 +427,24 @@ const reversePayment = async (req, res) => {
                 updatedInstallment.status = installmentStatus.status;
                 updatedInstallment.days_overdue = installmentStatus.daysOverdue;
                 await updatedInstallment.save({ session });
+
+                await Loan.updateOne({ _id: loan._id }, {
+                    $set: {
+                        "repayment_schedule.$[schedule].paid_amount": round2(updatedInstallment.amount_paid),
+                        "repayment_schedule.$[schedule].remaining": round2(updatedInstallment.remaining_balance),
+                        "repayment_schedule.$[schedule].status":
+                            updatedInstallment.amount_paid >= updatedInstallment.expected_amount
+                                ? "paid"
+                                : updatedInstallment.amount_paid > 0
+                                    ? "partial"
+                                    : "pending"
+                    }
+                }, {
+                    session,
+                    arrayFilters: [{
+                        "schedule.count": updatedInstallment.installment_number
+                    }]
+                });
             }
 
             result = { reversalEntry, markedOriginal, updatedLoan, updatedInstallment };
