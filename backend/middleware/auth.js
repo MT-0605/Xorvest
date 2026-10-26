@@ -1,46 +1,83 @@
 const jwt = require("jsonwebtoken");
+const User = require("../models/User");
 
-function authenticateJWT(req, res, next) {
-    const authorization = req.headers.authorization;
-    const token = authorization && authorization.startsWith("Bearer ")
-        ? authorization.slice(7)
-        : null;
-
-    if (!token) {
-        return res.status(401).json({
-            success: false,
-            message: "A Bearer token is required."
-        });
-    }
-
-    if (!process.env.JWT_SECRET) {
-        return res.status(500).json({
-            success: false,
-            message: "JWT authentication is not configured."
-        });
-    }
-
+/**
+ * Verify JWT token and attach user to req.user
+ */
+const verifyToken = async (req, res, next) => {
     try {
-        const payload = jwt.verify(token, process.env.JWT_SECRET, {
-            algorithms: ["HS256"]
-        });
-        if (!payload || typeof payload !== "object"
-            || typeof payload.user_id !== "string"
-            || !/^[a-f\d]{24}$/i.test(payload.user_id)) {
+        const authHeader = req.headers.authorization;
+        if (!authHeader || !authHeader.startsWith("Bearer ")) {
             return res.status(401).json({
                 success: false,
-                message: "The token does not contain a valid user_id."
+                message: "Unauthorized: Token missing or invalid"
             });
         }
 
-        req.user_id = payload.user_id;
-        return next();
+        const token = authHeader.split(" ")[1];
+        if (!token) {
+            return res.status(401).json({
+                success: false,
+                message: "Unauthorized: Token missing"
+            });
+        }
+
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || "xorvest_super_secure_jwt_secret_key_2026");
+        const user = await User.findById(decoded.id).select("-password");
+
+        if (!user) {
+            return res.status(401).json({
+                success: false,
+                message: "Unauthorized: User not found"
+            });
+        }
+
+        req.user = user;
+        next();
     } catch (error) {
         return res.status(401).json({
             success: false,
-            message: "The Bearer token is invalid or expired."
+            message: "Unauthorized: " + (error.message || "Invalid token")
         });
     }
-}
+};
 
-module.exports = authenticateJWT;
+/**
+ * Enforce Admin Role Authorization
+ */
+const requireAdmin = (req, res, next) => {
+    if (!req.user) {
+        return res.status(401).json({
+            success: false,
+            message: "Unauthorized: Authentication required"
+        });
+    }
+
+    if (req.user.role !== "admin") {
+        return res.status(403).json({
+            success: false,
+            message: "Forbidden: Admin access required"
+        });
+    }
+
+    next();
+};
+
+/**
+ * Customer / General User Auth
+ */
+const requireCustomer = (req, res, next) => {
+    if (!req.user) {
+        return res.status(401).json({
+            success: false,
+            message: "Unauthorized: Authentication required"
+        });
+    }
+    next();
+};
+
+module.exports = {
+    verifyToken,
+    requireAdmin,
+    requireCustomer
+};

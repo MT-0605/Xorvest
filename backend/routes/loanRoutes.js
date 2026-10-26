@@ -1,19 +1,13 @@
 const express = require("express");
-const {
-    createLoan,
-    payDailyInstallment,
-    getLoanDetails,
-    getPaymentHistory,
-    getPendingInstallments
-} = require("../controllers/loanController");
-const authenticateJWT = require("../middleware/auth");
-
 const router = express.Router();
+const { applyLoan, getMyLoans, getMyLoanDetails } = require("../controllers/loanController");
+const { verifyToken } = require("../middleware/auth");
 
-router.post("/", authenticateJWT, createLoan);
-router.post("/:loan_id/installments/:count/pay", authenticateJWT, payDailyInstallment);
-router.get("/:loan_id/payments", authenticateJWT, getPaymentHistory);
-router.get("/:loan_id/installments/pending", authenticateJWT, getPendingInstallments);
-router.get("/:loan_id", authenticateJWT, getLoanDetails);
+// All routes require authenticated user
+router.use(verifyToken);
+
+router.post("/apply", applyLoan);
+router.get("/my-loans", getMyLoans);
+router.get("/:id", getMyLoanDetails);
 
 module.exports = router;

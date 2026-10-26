@@ -97,16 +97,42 @@ const loanSchema = new mongoose.Schema({
         required: true,
         min: 0
     },
+    processing_fee: {
+        type: Number,
+        default: 0,
+        min: 0
+    },
+    interest_amount: {
+        type: Number,
+        default: 0,
+        min: 0
+    },
+    net_disbursed: {
+        type: Number,
+        default: 0,
+        min: 0
+    },
+    initial_deduction: {
+        type: Number,
+        default: 0,
+        min: 0
+    },
     status: {
         type: String,
-        enum: ["active", "completed"],
-        default: "active",
-        required: true
+        enum: ["active", "completed", "defaulted"],
+        default: "active"
     },
-    repayment_schedule: {
-        type: [repaymentInstallmentSchema],
-        required: true,
-        default: []
+    start_date: {
+        type: Date,
+        default: Date.now
+    },
+    first_installment_prepaid_amount: {
+        type: Number,
+        default: 0
+    },
+    notes: {
+        type: String,
+        default: ""
     }
 }, {
     timestamps: true
