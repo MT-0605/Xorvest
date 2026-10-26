@@ -8,6 +8,10 @@ const connectDB = async () => {
     } catch (error) {
         console.error(`MongoDB Connection Warning: ${error.message}. Ensure your MONGODB_URI in .env is configured.`);
     }
+
+    const conn = await mongoose.connect(uri);
+    console.log(`MongoDB Connected: ${conn.connection.host}`);
+    return conn;
 };
 
 module.exports = connectDB;

@@ -3,6 +3,8 @@ const Installment = require("../models/Installment");
 const Money = require("../models/Money");
 const TransactionLedger = require("../models/TransactionLedger");
 const { evaluateInstallmentStatus, round2 } = require("../services/loanService");
+const mongoose = require("mongoose");
+const { randomUUID } = require("crypto");
 
 /**
  * Record a verified payment or partial payment (Admin Only)
@@ -16,144 +18,229 @@ const { evaluateInstallmentStatus, round2 } = require("../services/loanService")
  *   notes: String
  */
 const recordPayment = async (req, res) => {
+    let session;
     try {
-        const { loan_id, installment_id, amount, payment_method, payment_reference, notes } = req.body;
+        const {
+            loan_id,
+            installment_id,
+            amount,
+            payment_method = "cash",
+            payment_reference,
+            notes = ""
+        } = req.body || {};
 
-        const payAmount = round2(amount);
-        if (!loan_id || !payAmount || payAmount <= 0) {
+        const numericAmount = Number(amount);
+        const payAmount = round2(numericAmount);
+        if (!mongoose.isValidObjectId(loan_id)
+            || !Number.isFinite(numericAmount)
+            || numericAmount <= 0
+            || Math.abs(numericAmount * 100 - Math.round(numericAmount * 100)) > 1e-7) {
             return res.status(400).json({
                 success: false,
-                message: "Please provide a valid loan_id and payment amount greater than 0"
+                message: "Provide a valid loan_id and a positive amount with at most two decimal places."
             });
         }
-
-        const loan = await Loan.findById(loan_id);
-        if (!loan) {
-            return res.status(404).json({
-                success: false,
-                message: "Loan not found"
-            });
-        }
-
-        if (loan.remaining <= 0) {
+        if (installment_id && !mongoose.isValidObjectId(installment_id)) {
             return res.status(400).json({
                 success: false,
-                message: "This loan has already been fully recovered"
+                message: "installment_id must be a valid object ID."
+            });
+        }
+        if (!["cash", "bank_transfer", "upi", "cheque", "other"].includes(payment_method)) {
+            return res.status(400).json({
+                success: false,
+                message: "payment_method is not supported."
+            });
+        }
+        if (typeof payment_reference !== "undefined"
+            && (typeof payment_reference !== "string"
+                || !payment_reference.trim()
+                || payment_reference.length > 150)) {
+            return res.status(400).json({
+                success: false,
+                message: "payment_reference must be a non-empty string of at most 150 characters."
+            });
+        }
+        if (typeof notes !== "string" || notes.length > 1000) {
+            return res.status(400).json({
+                success: false,
+                message: "notes must be a string of at most 1000 characters."
             });
         }
 
-        // Duplicate payment prevention check:
-        // 1. If explicit payment_reference is given, check for uniqueness
-        if (payment_reference) {
-            const existingRef = await TransactionLedger.findOne({ payment_reference });
-            if (existingRef) {
-                return res.status(409).json({
-                    success: false,
-                    message: `Duplicate payment detected: Reference '${payment_reference}' has already been processed.`
-                });
+        const finalRef = payment_reference
+            ? payment_reference.trim()
+            : `PAY-${randomUUID()}`;
+        const paymentDate = new Date();
+        session = await mongoose.startSession();
+
+        let result;
+        await session.withTransaction(async () => {
+            const loan = await Loan.findById(loan_id).session(session);
+            if (!loan) {
+                const error = new Error("Loan not found.");
+                error.status = 404;
+                throw error;
             }
-        }
+            if (loan.remaining < payAmount || loan.remaining <= 0) {
+                const error = new Error("Payment exceeds the outstanding loan balance.");
+                error.status = 400;
+                throw error;
+            }
 
-        // 2. Prevent rapid duplicate submissions within 2 minutes for same loan and amount
-        const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
-        const recentDuplicate = await TransactionLedger.findOne({
-            loan_id: loan._id,
-            amount: payAmount,
-            createdAt: { $gte: twoMinutesAgo },
-            status: "completed",
-            transaction_type: "repayment",
-            is_reversed: { $ne: true }
-        });
+            let targetInstallment;
+            if (installment_id) {
+                targetInstallment = await Installment.findOne({
+                    _id: installment_id,
+                    loan_id: loan._id,
+                    user_id: loan.user_id
+                }).session(session);
+                if (!targetInstallment) {
+                    const error = new Error("Installment does not belong to this loan.");
+                    error.status = 404;
+                    throw error;
+                }
+            } else {
+                targetInstallment = await Installment.findOne({
+                    loan_id: loan._id,
+                    remaining_balance: { $gt: 0 }
+                }).sort({ installment_number: 1 }).session(session);
+            }
 
-        if (recentDuplicate && !notes?.includes("[CONFIRMED_IDENTICAL]")) {
-            return res.status(409).json({
-                success: false,
-                message: `Potential duplicate payment: An identical payment of ${payAmount} for this loan was recorded at ${recentDuplicate.createdAt.toLocaleTimeString()}. Add notes '[CONFIRMED_IDENTICAL]' if this is intentionally a separate payment.`
-            });
-        }
+            if (!targetInstallment) {
+                const error = new Error("No unpaid installment exists for this loan.");
+                error.status = 409;
+                throw error;
+            }
+            if (payAmount > targetInstallment.remaining_balance) {
+                const error = new Error("Payment exceeds the selected installment's outstanding amount.");
+                error.status = 400;
+                throw error;
+            }
 
-        // Determine target installment
-        let targetInstallment = null;
-        if (installment_id) {
-            targetInstallment = await Installment.findById(installment_id);
-        }
+            const existingReference = await TransactionLedger.exists({
+                payment_reference: finalRef
+            }).session(session);
+            if (existingReference) {
+                const error = new Error("This payment_reference has already been processed.");
+                error.status = 409;
+                throw error;
+            }
 
-        if (!targetInstallment) {
-            // Auto-allocate to earliest unpaid or partially paid installment
-            targetInstallment = await Installment.findOne({
+            const updatedInstallment = await Installment.findOneAndUpdate({
+                _id: targetInstallment._id,
                 loan_id: loan._id,
-                remaining_balance: { $gt: 0 }
-            }).sort({ installment_number: 1 });
-        }
+                remaining_balance: { $gte: payAmount }
+            }, {
+                $inc: {
+                    amount_paid: payAmount,
+                    remaining_balance: -payAmount
+                },
+                $set: { actual_payment_date: paymentDate }
+            }, {
+                new: true,
+                runValidators: true,
+                session
+            });
+            if (!updatedInstallment) {
+                const error = new Error("Installment balance changed; reload and retry.");
+                error.status = 409;
+                throw error;
+            }
 
-        const finalRef = payment_reference || `PAY-${Date.now()}-${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
+            const installmentStatus = evaluateInstallmentStatus(updatedInstallment, paymentDate);
+            updatedInstallment.status = installmentStatus.status;
+            updatedInstallment.days_overdue = installmentStatus.daysOverdue;
+            await updatedInstallment.save({ session });
 
-        // Create transaction in TransactionLedger
-        const ledgerEntry = await TransactionLedger.create({
-            payment_reference: finalRef,
-            loan_id: loan._id,
-            installment_id: targetInstallment ? targetInstallment._id : null,
-            user_id: loan.user_id,
-            recorded_by_admin: req.user._id,
-            recorded_by_name: req.user.user_name || "Administrator",
-            amount: payAmount,
-            transaction_type: "repayment",
-            payment_method: payment_method || "cash",
-            status: "completed",
-            notes: notes || "Admin verified repayment"
+            const updatedLoan = await Loan.findOneAndUpdate({
+                _id: loan._id,
+                remaining: { $gte: payAmount },
+                status: { $ne: "completed" }
+            }, {
+                $inc: { remaining: -payAmount }
+            }, {
+                new: true,
+                runValidators: true,
+                session
+            });
+            if (!updatedLoan) {
+                const error = new Error("Loan balance changed; reload and retry.");
+                error.status = 409;
+                throw error;
+            }
+            if (updatedLoan.remaining === 0) {
+                updatedLoan.status = "completed";
+                await updatedLoan.save({ session });
+            }
+
+            const [ledgerEntry] = await TransactionLedger.create([{
+                payment_reference: finalRef,
+                loan_id: loan._id,
+                installment_id: updatedInstallment._id,
+                user_id: loan.user_id,
+                recorded_by_admin: req.user._id,
+                recorded_by_name: req.user.user_name || "Administrator",
+                amount: payAmount,
+                transaction_type: "repayment",
+                payment_method,
+                status: "completed",
+                notes: notes || "Admin verified repayment"
+            }], { session });
+
+            const paymentCount = await Money.countDocuments({ loan_id: loan._id }).session(session);
+            const [moneyRecord] = await Money.create([{
+                loan_id: loan._id,
+                date: paymentDate,
+                amount: payAmount,
+                count: paymentCount + 1
+            }], { session });
+            ledgerEntry.money_id = moneyRecord._id;
+            await ledgerEntry.save({ session });
+
+            result = { ledgerEntry, updatedLoan, updatedInstallment };
         });
-
-        // Sync with existing Money model
-        const moneyCount = await Money.countDocuments({ loan_id: loan._id });
-        const moneyRecord = await Money.create({
-            loan_id: loan._id,
-            date: new Date(),
-            amount: payAmount,
-            count: moneyCount + 1
-        });
-
-        ledgerEntry.money_id = moneyRecord._id;
-        await ledgerEntry.save();
-
-        // Update target installment if present
-        let updatedInstallment = null;
-        if (targetInstallment) {
-            targetInstallment.amount_paid = round2(targetInstallment.amount_paid + payAmount);
-            targetInstallment.remaining_balance = Math.max(0, round2(targetInstallment.expected_amount - targetInstallment.amount_paid));
-            targetInstallment.actual_payment_date = new Date();
-
-            const evalStatus = evaluateInstallmentStatus(targetInstallment, new Date());
-            targetInstallment.status = evalStatus.status;
-            targetInstallment.days_overdue = evalStatus.daysOverdue;
-            await targetInstallment.save();
-            updatedInstallment = targetInstallment;
-        }
-
-        // Update Loan remaining balance
-        const newRemaining = Math.max(0, round2(loan.remaining - payAmount));
-        loan.remaining = newRemaining;
-        if (newRemaining <= 0) {
-            loan.status = "completed";
-        }
-        await loan.save();
 
         return res.status(201).json({
             success: true,
             message: "Payment successfully recorded and audited",
-            transaction: ledgerEntry,
+            transaction: result.ledgerEntry,
             loan: {
-                id: loan._id,
-                total: loan.total,
-                remaining: loan.remaining,
-                status: loan.status
+                id: result.updatedLoan._id,
+                total: result.updatedLoan.total,
+                remaining: result.updatedLoan.remaining,
+                status: result.updatedLoan.status
             },
-            installment: updatedInstallment
+            installment: result.updatedInstallment
         });
     } catch (error) {
+        if (error.code === 11000) {
+            return res.status(409).json({
+                success: false,
+                message: "This payment_reference has already been processed."
+            });
+        }
+        if (error.status) {
+            return res.status(error.status).json({
+                success: false,
+                message: error.message
+            });
+        }
+        if (error.code === 20 || error.codeName === "IllegalOperation"
+            || /transaction numbers are only allowed|does not support transactions/i.test(error.message)) {
+            return res.status(503).json({
+                success: false,
+                message: "Payment recording requires MongoDB transaction support (a replica set or sharded cluster)."
+            });
+        }
         return res.status(500).json({
             success: false,
-            message: "Failed to record payment: " + error.message
+            message: "Failed to record payment."
         });
+    } finally {
+        if (session) {
+            await session.endSession();
+        }
     }
 };
 
@@ -164,106 +251,208 @@ const recordPayment = async (req, res) => {
  *   reversal_reason: String (required)
  */
 const reversePayment = async (req, res) => {
+    let session;
     try {
         const { id } = req.params;
-        const { reversal_reason } = req.body;
+        const { reversal_reason } = req.body || {};
 
-        if (!reversal_reason || reversal_reason.trim() === "") {
+        if (!mongoose.isValidObjectId(id)) {
             return res.status(400).json({
                 success: false,
-                message: "Please provide a valid reversal_reason for audit tracking"
+                message: "id must be a valid transaction object ID."
             });
         }
-
-        const originalTransaction = await TransactionLedger.findById(id);
-        if (!originalTransaction) {
-            return res.status(404).json({
-                success: false,
-                message: "Transaction not found"
-            });
-        }
-
-        if (originalTransaction.is_reversed) {
+        if (typeof reversal_reason !== "string"
+            || !reversal_reason.trim()
+            || reversal_reason.length > 1000) {
             return res.status(400).json({
                 success: false,
-                message: `This transaction has already been reversed under reference ${originalTransaction.reversal_reference}`
+                message: "Provide a reversal_reason of at most 1000 characters."
             });
         }
 
-        const reversalRef = `REV-${Date.now()}-${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
+        session = await mongoose.startSession();
+        let result;
+        await session.withTransaction(async () => {
+            const originalTransaction = await TransactionLedger.findById(id).session(session);
+            if (!originalTransaction) {
+                const error = new Error("Transaction not found.");
+                error.status = 404;
+                throw error;
+            }
+            if (originalTransaction.transaction_type !== "repayment"
+                || originalTransaction.status !== "completed"
+                || originalTransaction.is_reversed
+                || !Number.isFinite(originalTransaction.amount)
+                || originalTransaction.amount <= 0) {
+                const error = new Error("Only an unreversed completed repayment can be reversed.");
+                error.status = 409;
+                throw error;
+            }
 
-        // 1. Create reversal transaction entry
-        const reversalEntry = await TransactionLedger.create({
-            payment_reference: reversalRef,
-            loan_id: originalTransaction.loan_id,
-            installment_id: originalTransaction.installment_id,
-            user_id: originalTransaction.user_id,
-            recorded_by_admin: req.user._id,
-            recorded_by_name: req.user.user_name || "Administrator",
-            amount: -Math.abs(originalTransaction.amount),
-            transaction_type: "reversal",
-            payment_method: originalTransaction.payment_method,
-            status: "completed",
-            is_reversed: false,
-            reversal_reference: originalTransaction.payment_reference,
-            reversal_reason: reversal_reason,
-            reversed_at: new Date(),
-            reversed_by_admin: req.user._id,
-            notes: `Audited reversal of ${originalTransaction.payment_reference}. Reason: ${reversal_reason}`
+            const loan = await Loan.findById(originalTransaction.loan_id).session(session);
+            if (!loan) {
+                const error = new Error("The transaction loan no longer exists.");
+                error.status = 409;
+                throw error;
+            }
+
+            const amount = round2(originalTransaction.amount);
+            let updatedInstallment = null;
+            if (originalTransaction.installment_id) {
+                const installment = await Installment.findOne({
+                    _id: originalTransaction.installment_id,
+                    loan_id: loan._id
+                }).session(session);
+                if (!installment
+                    || installment.amount_paid < amount
+                    || round2(installment.remaining_balance + amount) > installment.expected_amount) {
+                    const error = new Error("Installment data changed; the repayment cannot be reversed safely.");
+                    error.status = 409;
+                    throw error;
+                }
+
+                updatedInstallment = await Installment.findOneAndUpdate({
+                    _id: installment._id,
+                    loan_id: loan._id,
+                    amount_paid: installment.amount_paid,
+                    remaining_balance: installment.remaining_balance
+                }, {
+                    $inc: {
+                        amount_paid: -amount,
+                        remaining_balance: amount
+                    }
+                }, {
+                    new: true,
+                    runValidators: true,
+                    session
+                });
+                if (!updatedInstallment) {
+                    const error = new Error("Installment data changed; the repayment cannot be reversed safely.");
+                    error.status = 409;
+                    throw error;
+                }
+
+            }
+
+            const updatedLoan = await Loan.findOneAndUpdate({
+                _id: loan._id,
+                remaining: { $lte: round2(loan.total - amount) }
+            }, {
+                $inc: { remaining: amount },
+                $set: { status: "active" }
+            }, {
+                new: true,
+                runValidators: true,
+                session
+            });
+            if (!updatedLoan) {
+                const error = new Error("Loan balance changed; the repayment cannot be reversed safely.");
+                error.status = 409;
+                throw error;
+            }
+
+            const reversalReference = `REV-${randomUUID()}`;
+            const [reversalEntry] = await TransactionLedger.create([{
+                payment_reference: reversalReference,
+                loan_id: originalTransaction.loan_id,
+                installment_id: originalTransaction.installment_id,
+                user_id: originalTransaction.user_id,
+                recorded_by_admin: req.user._id,
+                recorded_by_name: req.user.user_name || "Administrator",
+                amount: -amount,
+                transaction_type: "reversal",
+                payment_method: originalTransaction.payment_method,
+                status: "completed",
+                reversal_reference: originalTransaction.payment_reference,
+                reversal_reason: reversal_reason.trim(),
+                reversed_at: new Date(),
+                reversed_by_admin: req.user._id,
+                notes: `Audited reversal of ${originalTransaction.payment_reference}.`
+            }], { session });
+
+            const markedOriginal = await TransactionLedger.findOneAndUpdate({
+                _id: originalTransaction._id,
+                transaction_type: "repayment",
+                status: "completed",
+                is_reversed: false
+            }, {
+                $set: {
+                    is_reversed: true,
+                    status: "reversed",
+                    reversal_reference: reversalReference,
+                    reversal_reason: reversal_reason.trim(),
+                    reversed_at: new Date(),
+                    reversed_by_admin: req.user._id
+                }
+            }, {
+                new: true,
+                session
+            });
+            if (!markedOriginal) {
+                const error = new Error("This repayment has already been reversed.");
+                error.status = 409;
+                throw error;
+            }
+
+            if (updatedInstallment) {
+                const latestPayment = await TransactionLedger.findOne({
+                    installment_id: updatedInstallment._id,
+                    transaction_type: "repayment",
+                    status: "completed",
+                    is_reversed: false
+                }).sort({ createdAt: -1 }).session(session);
+                updatedInstallment.actual_payment_date = latestPayment
+                    ? latestPayment.createdAt
+                    : null;
+                const installmentStatus = evaluateInstallmentStatus(updatedInstallment, new Date());
+                updatedInstallment.status = installmentStatus.status;
+                updatedInstallment.days_overdue = installmentStatus.daysOverdue;
+                await updatedInstallment.save({ session });
+            }
+
+            result = { reversalEntry, markedOriginal, updatedLoan, updatedInstallment };
         });
-
-        // 2. Mark original transaction as reversed
-        originalTransaction.is_reversed = true;
-        originalTransaction.reversal_reference = reversalRef;
-        originalTransaction.reversal_reason = reversal_reason;
-        originalTransaction.reversed_at = new Date();
-        originalTransaction.reversed_by_admin = req.user._id;
-        await originalTransaction.save();
-
-        // 3. Revert amount on Installment
-        let updatedInstallment = null;
-        if (originalTransaction.installment_id) {
-            const inst = await Installment.findById(originalTransaction.installment_id);
-            if (inst) {
-                inst.amount_paid = Math.max(0, round2(inst.amount_paid - originalTransaction.amount));
-                inst.remaining_balance = Math.max(0, round2(inst.expected_amount - inst.amount_paid));
-                const evalStatus = evaluateInstallmentStatus(inst, new Date());
-                inst.status = evalStatus.status;
-                inst.days_overdue = evalStatus.daysOverdue;
-                await inst.save();
-                updatedInstallment = inst;
-            }
-        }
-
-        // 4. Revert amount on Loan
-        const loan = await Loan.findById(originalTransaction.loan_id);
-        if (loan) {
-            loan.remaining = round2(loan.remaining + originalTransaction.amount);
-            if (loan.status === "completed" && loan.remaining > 0) {
-                loan.status = "active";
-            }
-            await loan.save();
-        }
-
         return res.status(200).json({
             success: true,
             message: "Transaction successfully reversed with full audit trail",
-            reversal_transaction: reversalEntry,
-            original_transaction: originalTransaction,
-            loan: loan
-                ? {
-                      id: loan._id,
-                      remaining: loan.remaining,
-                      status: loan.status
-                  }
-                : null,
-            installment: updatedInstallment
+            reversal_transaction: result.reversalEntry,
+            original_transaction: result.markedOriginal,
+            loan: {
+                id: result.updatedLoan._id,
+                remaining: result.updatedLoan.remaining,
+                status: result.updatedLoan.status
+            },
+            installment: result.updatedInstallment
         });
     } catch (error) {
+        if (error.code === 11000) {
+            return res.status(409).json({
+                success: false,
+                message: "The repayment has already been reversed."
+            });
+        }
+        if (error.status) {
+            return res.status(error.status).json({
+                success: false,
+                message: error.message
+            });
+        }
+        if (error.code === 20 || error.codeName === "IllegalOperation"
+            || /transaction numbers are only allowed|does not support transactions/i.test(error.message)) {
+            return res.status(503).json({
+                success: false,
+                message: "Payment reversal requires MongoDB transaction support (a replica set or sharded cluster)."
+            });
+        }
         return res.status(500).json({
             success: false,
-            message: "Failed to reverse transaction: " + error.message
+            message: "Failed to reverse transaction."
         });
+    } finally {
+        if (session) {
+            await session.endSession();
+        }
     }
 };
 
@@ -273,7 +462,26 @@ const reversePayment = async (req, res) => {
  */
 const getTransactionLedger = async (req, res) => {
     try {
-        const { loan_id, user_id, page = 1, limit = 50 } = req.query;
+        const { loan_id, user_id, page = "1", limit = "50" } = req.query;
+        if (!/^[1-9]\d*$/.test(page) || !/^[1-9]\d*$/.test(limit)
+            || Number(page) > 100000 || Number(limit) > 100) {
+            return res.status(400).json({
+                success: false,
+                message: "page must be positive and limit must be between 1 and 100."
+            });
+        }
+        if (loan_id && !mongoose.isValidObjectId(loan_id)) {
+            return res.status(400).json({
+                success: false,
+                message: "loan_id must be a valid object ID."
+            });
+        }
+        if (user_id && !mongoose.isValidObjectId(user_id)) {
+            return res.status(400).json({
+                success: false,
+                message: "user_id must be a valid object ID."
+            });
+        }
         const query = {};
 
         if (loan_id) query.loan_id = loan_id;
@@ -299,7 +507,7 @@ const getTransactionLedger = async (req, res) => {
     } catch (error) {
         return res.status(500).json({
             success: false,
-            message: "Failed to retrieve transaction ledger: " + error.message
+            message: "Failed to retrieve transaction ledger."
         });
     }
 };

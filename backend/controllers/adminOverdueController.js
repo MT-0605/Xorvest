@@ -104,7 +104,7 @@ const getOverdueReport = async (req, res) => {
     } catch (error) {
         return res.status(500).json({
             success: false,
-            message: "Failed to load overdue report: " + error.message
+            message: "Failed to load overdue report."
         });
     }
 };

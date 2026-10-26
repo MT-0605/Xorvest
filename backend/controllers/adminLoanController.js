@@ -11,7 +11,47 @@ const mongoose = require("mongoose");
  */
 const getAllLoans = async (req, res) => {
     try {
-        const { search, frequency, status, page = 1, limit = 20, sort = "-createdAt" } = req.query;
+        const { search, frequency, status, page = "1", limit = "20", sort = "-createdAt" } = req.query;
+
+        if (!/^[1-9]\d*$/.test(page) || !/^[1-9]\d*$/.test(limit)
+            || Number(page) > 100000 || Number(limit) > 100) {
+            return res.status(400).json({
+                success: false,
+                message: "page must be positive and limit must be between 1 and 100."
+            });
+        }
+        if (search && (typeof search !== "string" || search.length > 100)) {
+            return res.status(400).json({
+                success: false,
+                message: "search must be at most 100 characters."
+            });
+        }
+        if (frequency && !["daily", "weekly", "monthly"].includes(frequency)) {
+            return res.status(400).json({
+                success: false,
+                message: "frequency is not supported."
+            });
+        }
+        if (status && !["active", "completed", "defaulted"].includes(status)) {
+            return res.status(400).json({
+                success: false,
+                message: "status is not supported."
+            });
+        }
+        const allowedSortFields = ["createdAt", "amount", "remaining", "status", "frequency"];
+        if (typeof sort !== "string") {
+            return res.status(400).json({
+                success: false,
+                message: "sort is not supported."
+            });
+        }
+        const sortField = sort.startsWith("-") ? sort.slice(1) : sort;
+        if (!allowedSortFields.includes(sortField)) {
+            return res.status(400).json({
+                success: false,
+                message: "sort is not supported."
+            });
+        }
 
         const query = {};
 
@@ -25,14 +65,15 @@ const getAllLoans = async (req, res) => {
 
         // Search by customer name, email, or Loan ID
         if (search) {
-            const isObjectId = mongoose.Types.ObjectId.isValid(search);
+            const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            const isObjectId = /^[a-f\d]{24}$/i.test(search);
             if (isObjectId) {
                 query.$or = [{ _id: search }];
             } else {
                 const matchingUsers = await User.find({
                     $or: [
-                        { user_name: { $regex: search, $options: "i" } },
-                        { email: { $regex: search, $options: "i" } }
+                        { user_name: { $regex: escapedSearch, $options: "i" } },
+                        { email: { $regex: escapedSearch, $options: "i" } }
                     ]
                 }).select("_id");
 
@@ -46,7 +87,7 @@ const getAllLoans = async (req, res) => {
 
         const loans = await Loan.find(query)
             .populate("user_id", "user_name email")
-            .sort(sort)
+            .sort({ [sortField]: sort.startsWith("-") ? -1 : 1 })
             .skip(skip)
             .limit(Number(limit));
 
@@ -96,7 +137,7 @@ const getAllLoans = async (req, res) => {
     } catch (error) {
         return res.status(500).json({
             success: false,
-            message: "Failed to retrieve loans: " + error.message
+            message: "Failed to retrieve loans."
         });
     }
 };
@@ -107,6 +148,12 @@ const getAllLoans = async (req, res) => {
  */
 const getLoanById = async (req, res) => {
     try {
+        if (!mongoose.isValidObjectId(req.params.id)) {
+            return res.status(400).json({
+                success: false,
+                message: "Loan id must be a valid object ID."
+            });
+        }
         const loan = await Loan.findById(req.params.id).populate("user_id", "user_name email");
         if (!loan) {
             return res.status(404).json({
@@ -176,7 +223,7 @@ const getLoanById = async (req, res) => {
     } catch (error) {
         return res.status(500).json({
             success: false,
-            message: "Failed to retrieve loan detail: " + error.message
+            message: "Failed to retrieve loan detail."
         });
     }
 };

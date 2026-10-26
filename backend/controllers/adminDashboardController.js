@@ -153,7 +153,7 @@ const getAdminDashboard = async (req, res) => {
     } catch (error) {
         return res.status(500).json({
             success: false,
-            message: "Failed to generate admin dashboard metrics: " + error.message
+            message: "Failed to generate admin dashboard metrics."
         });
     }
 };

@@ -19,10 +19,32 @@ const { calculateMonthlyInterestSchedule } = require("./monthlyInterestService")
  * @returns {Object} Calculated loan details and installment array
  */
 const calculateLoanSchedule = ({ amount, frequency, rate, total_day, startDate = new Date() }) => {
+    if (!isNumericInput(amount) || !isNumericInput(rate) || !isNumericInput(total_day)) {
+        throw new Error("amount, rate, and total_day must be numeric values.");
+    }
+
     const principal = Number(amount);
     const interestRate = Number(rate);
     const tenure = Number(total_day);
     const start = new Date(startDate);
+
+    if (!Number.isFinite(principal) || principal <= 0
+        || !Number.isSafeInteger(Math.round(principal * 100))
+        || Math.abs(principal * 100 - Math.round(principal * 100)) > 1e-7) {
+        throw new Error("amount must be a positive number with at most two decimal places.");
+    }
+    if (!["daily", "weekly", "monthly"].includes(frequency)) {
+        throw new Error("frequency must be daily, weekly, or monthly.");
+    }
+    if (!Number.isFinite(interestRate) || interestRate < 0) {
+        throw new Error("rate must be a non-negative number.");
+    }
+    if (!Number.isSafeInteger(tenure) || tenure < 1) {
+        throw new Error("total_day must be a positive whole number.");
+    }
+    if (!Number.isFinite(start.getTime())) {
+        throw new Error("startDate must be a valid date.");
+    }
 
     // Calculate Interest Amount & Total Expected Recovery
     // Flat rate for the tenure: Interest = Principal * (Rate / 100)
@@ -31,6 +53,9 @@ const calculateLoanSchedule = ({ amount, frequency, rate, total_day, startDate =
 
     // Processing Fee is 2% of principal for all loans
     const processingFee = round2(principal * 0.02);
+    if (![interestAmount, totalRecovery, processingFee].every(Number.isFinite)) {
+        throw new Error("The financial terms exceed the supported calculation range.");
+    }
 
     let numberOfInstallments = 1;
     let initialDeduction = 0;
@@ -42,6 +67,9 @@ const calculateLoanSchedule = ({ amount, frequency, rate, total_day, startDate =
         // Daily loans
         // Tenure represents number of days
         numberOfInstallments = Math.max(1, Math.floor(tenure));
+        if (numberOfInstallments > MAX_INSTALLMENTS) {
+            throw new Error(`Repayment schedules cannot exceed ${MAX_INSTALLMENTS} installments.`);
+        }
         const dailyEMI = round2(totalRecovery / numberOfInstallments);
 
         // Deduct processing fee of 2% of principal and first day's EMI at disbursement
@@ -114,7 +142,10 @@ const calculateLoanSchedule = ({ amount, frequency, rate, total_day, startDate =
     } else if (frequency === "weekly") {
         // Weekly loans
         // Number of weekly installments (e.g. total_day / 7 or if total_day < 7, minimum 1)
-        numberOfInstallments = tenure >= 7 ? Math.floor(tenure / 7) : Math.max(1, Math.floor(tenure));
+        numberOfInstallments = Math.max(1, Math.floor(tenure / 7));
+        if (numberOfInstallments > MAX_INSTALLMENTS) {
+            throw new Error(`Repayment schedules cannot exceed ${MAX_INSTALLMENTS} installments.`);
+        }
         const weeklyEMI = round2(totalRecovery / numberOfInstallments);
 
         // Deduct processing fee and HALF of the first weekly EMI at disbursement
@@ -198,6 +229,10 @@ const calculateLoanSchedule = ({ amount, frequency, rate, total_day, startDate =
             total_day: tenure,
             startDate: start
         });
+    }
+
+    if (!Number.isFinite(netDisbursed) || netDisbursed < 0) {
+        throw new Error("The calculated deductions exceed the loan principal.");
     }
 
     const remainingToRecover = round2(totalRecovery - upfrontRecovered);
